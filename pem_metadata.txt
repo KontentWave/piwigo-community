@@ -1,0 +1,4 @@
+File automatically created from SVN or Git repository.
+
+URL: https://github.com/plegall/Piwigo-community 
+Revision: 552c3cb5342c45aa395c992e77736ada862cd9b3 (Tue Apr 21 18:21:54 2026 +0200)
