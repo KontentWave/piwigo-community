@@ -22,6 +22,25 @@
 var rootUrl = "{$ABSOLUTE_ROOT_URL}";
 {literal}
 jQuery(document).ready(function(){
+  var uploader = null;
+
+  function hasUploadCategory() {
+    return jQuery("#albumSelect option").length > 0;
+  }
+
+  function syncUploadControls() {
+    var hasAlbum = hasUploadCategory();
+    jQuery('#addFiles').prop('disabled', !hasAlbum);
+
+    if (!hasAlbum) {
+      jQuery('#startUpload').prop('disabled', true);
+      return;
+    }
+
+    if (uploader !== null) {
+      jQuery('#startUpload').prop('disabled', uploader.files.length == 0);
+    }
+  }
 
   function checkUploadStart() {
     var nbErrors = 0;
@@ -33,8 +52,7 @@ jQuery(document).ready(function(){
       nbErrors++;
     }
 
-    var nbFiles = 0;
-    nbFiles = jQuery(".uploadifyQueueItem").size();
+    var nbFiles = uploader === null ? 0 : uploader.files.length;
 
     if (nbFiles == 0) {
       jQuery("#formErrors #noPhoto").show();
@@ -73,7 +91,7 @@ jQuery(document).ready(function(){
 
   function fillCategoryListbox(selectId, selectedValue) {
     jQuery.getJSON(
-      rootUrl + "ws.php?format=json&method=pwg.categories.getList",
+      rootUrl + "ws.php?format=json&method=community.categories.getList",
       {
         recursive: true,
         fullname: true,
@@ -96,6 +114,8 @@ jQuery(document).ready(function(){
               ;
           }
         );
+
+        syncUploadControls();
       }
     );
   }
@@ -216,10 +236,15 @@ var limit_storage = {$limit_storage};
 
     preinit: {
       Init: function (up, info) {
+        uploader = up;
         jQuery('#uploader_container').removeAttr("title"); //remove the "using runtime" text
+        syncUploadControls();
         
         jQuery('#startUpload').on('click', function(e) {
             e.preventDefault();
+            if (!checkUploadStart()) {
+              return false;
+            }
             up.start();
           });
         
@@ -234,7 +259,7 @@ var limit_storage = {$limit_storage};
     init : {
       // update custom button state on queue change
       QueueChanged : function(up) {
-        jQuery('#startUpload').prop('disabled', up.files.length == 0);
+        syncUploadControls();
       },
       
       UploadProgress: function(up, file) {
@@ -368,11 +393,7 @@ var limit_storage = {$limit_storage};
     }
 	});
 
-  jQuery("input[type=button]").click(function() {
-    if (!checkUploadStart()) {
-      return false;
-    }
-  });
+  syncUploadControls();
 });
 {/literal}{/footer_script}
 

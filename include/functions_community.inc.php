@@ -289,7 +289,10 @@ SELECT
 
     if (!empty($user_album_category_id) and !is_admin())
     {
-      $user_album_descendants = array_map('intval', get_subcat_ids(array($user_album_category_id)));
+      $user_album_descendants = array_values(array_diff(
+        array_map('intval', get_subcat_ids(array($user_album_category_id))),
+        array((int) $user_album_category_id)
+      ));
       $user_album_tree = array_values(array_unique(array_merge(array((int) $user_album_category_id), $user_album_descendants)));
 
       $return['upload_whole_gallery'] = false;
@@ -355,6 +358,9 @@ SELECT *
 
     $user_album_category_id = $category_info['id'];
 
+    invalidate_user_cache();
+    community_update_cache_key();
+
     // in functions_html::get_cat_display_name_cache we use a cache and this
     // cache must be reset so that new album is included inside it.
     global $cache;
@@ -404,8 +410,11 @@ SELECT
 
 function community_update_cache_key()
 {
+  global $conf;
+
   $cache_key = generate_key(20);
   conf_update_param('community_cache_key', $cache_key);
+  $conf['community_cache_key'] = $cache_key;
   return $cache_key;
 }
 
