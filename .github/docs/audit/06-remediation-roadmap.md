@@ -15,15 +15,18 @@ Target: before the next production exposure change.
 Target: first patch release.
 
 1. Replace `community_switch_user_to_admin` with Community-owned, method-specific adapters.
-2. Validate all category IDs against effective grants before any upload/chunk write.
-3. Bind chunk state to actor, destination, checksum, size, and expiry.
-4. Add ownership/category checks to upload completion and image mutation.
-5. Convert all admin mutations to POST plus `pwg_token`; remove permission deletion by GET.
-6. Add archive path and resource limits or remove archive support.
+2. Reject legacy upload checksums that are not exactly 32 hexadecimal characters before filesystem or SQL use, and remove raw checksum interpolation.
+3. Validate all category IDs against effective grants before any upload/chunk write.
+4. Bind chunk state to actor, destination, checksum, size, and expiry.
+5. Add ownership/category checks to upload completion, image replacement, format attachment, update mode, and other image mutation.
+6. Convert all admin mutations to POST plus `pwg_token`; remove permission deletion by GET.
+7. Add archive path and resource limits or remove archive support.
 
 Acceptance tests:
 
 - A user granted album A cannot upload, chunk, complete, edit, or delete in album B.
+- A user cannot replace another owner's image, attach a format to it, or target it through upload update mode.
+- Invalid or adversarial `original_sum` values are rejected before creating buffer files or issuing queries.
 - A mixed `[A, B]` destination request fails entirely.
 - A user with upload rights cannot gain unrelated admin webservice behavior.
 - Missing, stale, and forged CSRF tokens cause zero writes.
@@ -33,7 +36,7 @@ Acceptance tests:
 
 Target: second patch/minor release.
 
-1. Correct quota units and the `$idx` rollback bug.
+1. Correct the `$idx` rollback bug and remove repeated full-history quota aggregation during rollback.
 2. Introduce atomic byte/photo reservations shared by all upload transports.
 3. Migrate plugin tables to InnoDB with primary, unique, and query indexes.
 4. Implement explicit moderation states and transaction-aware transitions.

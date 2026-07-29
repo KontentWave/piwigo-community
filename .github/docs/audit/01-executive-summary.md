@@ -5,7 +5,7 @@ Release posture: **Conditional, remediation required**
 
 ## Decision
 
-Do not expose this version to broadly untrusted uploaders until SEC-01 through SEC-04 are resolved. The plugin has a coherent permission model and uses Piwigo validation helpers in many places, but its webservice bridge converts limited Community rights into ambient administrator status. The browser upload path also commits files before applying quotas and moderation state.
+Do not expose this version to broadly untrusted uploaders until SEC-01 through SEC-04 and SEC-06 are resolved. The plugin has a coherent permission model and uses Piwigo validation helpers in many places, but its webservice bridge converts limited Community rights into ambient administrator status. That elevation exposes existing-image replacement and format attachment without ownership checks, and the legacy upload path interpolates a caller-controlled checksum into SQL. The browser upload path also commits files before applying quotas and moderation state.
 
 For a small, trusted contributor group behind normal Piwigo authentication, deployment can continue temporarily with ZIP uploads disabled, tightly scoped Community permissions, monitored storage, and administrator CSRF protections supplied at the reverse proxy or application layer. These are compensating controls, not fixes.
 
@@ -25,7 +25,8 @@ For a small, trusted contributor group behind normal Piwigo authentication, depl
 
 | ID       | Severity | Finding                                                                                       |
 | -------- | -------- | --------------------------------------------------------------------------------------------- |
-| SEC-01   | Critical | Upload webservices gain administrator status without destination authorization.               |
+| SEC-01   | Critical | Upload webservices gain administrator status without destination or object authorization.     |
+| SEC-06   | Critical | Legacy upload accepts a caller-controlled checksum that reaches unescaped SQL.                |
 | SEC-02   | High     | Admin state changes lack consistent CSRF validation; deletion is performed by GET.            |
 | SEC-03   | High     | ZIP extraction has no canonical-path, expansion-size, entry-count, or depth limits.           |
 | SEC-04   | High     | Quotas are checked after persistence and can be exceeded concurrently.                        |
@@ -46,7 +47,7 @@ For a small, trusted contributor group behind normal Piwigo authentication, depl
 
 ## Release gates
 
-1. Replace ambient webservice admin elevation with method-specific authorization and verify every requested album/image.
+1. Replace ambient webservice admin elevation with method-specific authorization and verify every requested album/image; reject checksums that are not exactly 32 hexadecimal characters before any filesystem or SQL use.
 2. Add POST-only CSRF checks to every administrator mutation and remove GET deletion.
 3. Add bounded archive inspection/extraction and server-side preflight quotas.
 4. Migrate plugin tables to InnoDB with keys and uniqueness constraints; introduce transaction-aware state transitions.

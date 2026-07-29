@@ -6,7 +6,7 @@ Scope: `/home/marcel/projects/piwigo/plugins/community`
 
 ## Executive verdict
 
-The plugin should not be treated as production-hardened without compensating controls and remediation. Its core authorization model is understandable, but several state-changing admin paths lack CSRF protection, webservice compatibility is implemented by mutating the current user to `admin`, upload quotas are enforced after files are committed, ZIP processing has no explicit expansion or path-safety limits, and the MyISAM schema prevents transactional moderation workflows.
+The plugin should not be treated as production-hardened without compensating controls and remediation. Its core authorization model is understandable, but several state-changing admin paths lack CSRF protection, webservice compatibility is implemented by mutating the current user to `admin`, the legacy upload path accepts a caller-controlled checksum in raw SQL, upload quotas are enforced after files are committed, ZIP processing has no explicit expansion or path-safety limits, and the MyISAM schema prevents transactional moderation workflows.
 
 The recommended release posture is **conditional / remediation required**. Resolve all Critical and High findings before broad untrusted-user deployment. Resolve Medium reliability findings before promising upload or moderation durability.
 

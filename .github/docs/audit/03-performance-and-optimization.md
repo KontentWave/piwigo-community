@@ -43,14 +43,14 @@ Only `community_permissions.id` is indexed. `community_pendings` has no primary 
 
 Validate with `EXPLAIN` on production-like data.
 
-## PERF-05: Repeated usage aggregation is expensive and imprecise
+## PERF-05: Repeated usage aggregation is expensive
 
 **Severity: Medium**
 **Evidence:** `community_get_user_limits()` at `include/functions_community.inc.php:432-443`; repeated calls in `add_photos.php:96-149`.
 
-Each quota check aggregates all images for a user. During rollback it repeats the full aggregate after every deletion. Storage uses `FLOOR(SUM(filesize)/1024)`, which appears to produce KiB while the UI and permission field call the value MB, making enforcement approximately 1024 times looser if `filesize` is KiB as the rest of Piwigo displays suggest. This unit mismatch must be verified against the current schema/runtime.
+Each quota check aggregates all images for a user. During rollback it repeats the full aggregate after every deletion. Piwigo stores `images.filesize` in KiB (`floor(filesize($path)/1024)`), so Community's `FLOOR(SUM(filesize)/1024)` correctly reports whole MiB for the permission field labeled MB. The arithmetic loses sub-MiB precision, but it does not create the previously suspected 1024-fold unit mismatch.
 
-**Recommendation:** Define units in column names and configuration (`storage_bytes`), use integer bytes end to end, maintain reservation/usage counters transactionally, and recalculate asynchronously as a reconciliation check. Add boundary tests at exactly one byte below/equal/above quota.
+**Recommendation:** Avoid recalculating full historical usage after every uploaded image and deletion. Maintain reservation/usage counters transactionally, preferably in integer KiB to match Piwigo or explicitly named bytes, and recalculate asynchronously as a reconciliation check. Add boundary tests around KiB and MiB rounding plus exact quota limits.
 
 ## PERF-06: Frontend assets are duplicated and legacy-heavy
 

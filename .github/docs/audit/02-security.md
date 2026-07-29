@@ -7,9 +7,11 @@
 
 Any non-admin user with at least one upload or create permission can have `$user['status']` changed to `admin` for a broad allowlist. For `pwg.images.addSimple`, `pwg.images.upload`, `pwg.images.uploadAsync`, and `pwg.images.add`, the requested category is captured but never checked against `upload_categories` before elevation. Core therefore sees an administrator and accepts destinations outside the Community grant. Moderation is applied later in `community_sendResponse`, after the image has been created.
 
+The elevated methods also accept object-level mutation parameters that Community does not authorize. Piwigo documents and implements `image_id` on `pwg.images.add`, `pwg.images.addSimple`, and `pwg.images.uploadAsync` as replacement of an existing image; `pwg.images.upload` accepts `format_of` to attach a format to an existing image and supports `update_mode`. Core checks that an object exists, but these upload paths do not require it to be owned by the Community caller. This bypasses the ownership filtering Community applies only to `pwg.images.setInfo` and `pwg.images.delete`.
+
 The same elevation grants `pwg.tags.add`, chunk/check methods, session status, and upload completion based only on the existence of any Community permission. `pwg.images.addChunk` is not bound to a destination at all. Request-global status also affects other handlers executing later in the request.
 
-**Impact:** A limited contributor can upload into unauthorized albums and exercise core admin-only upload support methods. New or changed core handlers can silently expand the privilege surface.
+**Impact:** A limited contributor can upload into unauthorized albums, replace or modify existing images they do not own, attach formats to arbitrary images, and exercise core admin-only upload support methods. New or changed core handlers can silently expand the privilege surface.
 
 **Remediation:**
 
@@ -64,14 +66,16 @@ The method validates the CSRF token but does not require queried images to have 
 
 **Remediation:** Query through `IMAGES_TABLE` and `IMAGE_CATEGORY_TABLE` with current ownership/session constraints, reject any mismatch, deduplicate IDs, and derive category/user notification fields from database records.
 
-## SEC-06: SQL safety depends on scattered caller discipline
+## SEC-06: Caller-controlled checksum reaches unescaped SQL
 
-**Severity: Medium**
-**Evidence:** SQL construction throughout `main.inc.php`, `admin_*.php`, and `include/functions_community.inc.php`; notably `main.inc.php:927-935` interpolates the captured `original_sum`, and session ID is interpolated at `main.inc.php:430-438`.
+**Severity: Critical**
+**Evidence:** `main.inc.php:335-339` captures `$_REQUEST['original_sum']`; `main.inc.php:922-930` interpolates it into a query. Piwigo `ws.php`, registration for `pwg.images.add`, declares `original_sum` without a type or pattern constraint; `include/ws_functions/pwg.images.php`, function `ws_images_add`, interpolates it into the uniqueness query; `admin/include/functions_upload.inc.php`, function `add_uploaded_file`, interpolates the supplied checksum into duplicate detection. Piwigo's newer `ws_images_uploadAsync` validates the same field with `/^[a-fA-F0-9]{32}$/`, demonstrating the missing legacy-path boundary.
 
-Most identifiers are validated with `check_input_parameter()` or `intval()`, but raw SQL concatenation makes omissions difficult to detect and future extensions hazardous. Empty `IN ()` arrays can also produce errors in several paths.
+Any Community-enabled caller elevated for `pwg.images.add` can supply an arbitrary `original_sum`. The value is used in chunk filenames and regular expressions, then reaches raw SQL in both Piwigo and Community without escaping or checksum validation. The database insert helper does not make the earlier duplicate-detection and response-hook queries safe.
 
-**Remediation:** Centralize ID-list normalization and SQL escaping/prepared access using current Piwigo database APIs. Validate checksums against an exact hex pattern. Make empty collections return before query construction.
+**Impact:** A contributor can alter SQL query structure under the database account used by Piwigo. Depending on the driver configuration and payload, this can disclose or corrupt gallery data, bypass duplicate selection, misassociate moderation state, or cause availability failures. The same input also creates unsafe filesystem and regular-expression behavior before persistence.
+
+**Remediation:** Reject `original_sum` unless it matches exactly 32 hexadecimal characters at the first Community boundary and independently in every core method that consumes it. Escape values or use structured database helpers for every query; do not rely on format validation as the SQL defense. Quote checksum values used in regular expressions with `preg_quote()` and derive buffer names from server-generated identifiers. Add adversarial tests covering quotes, regex metacharacters, separators, traversal characters, invalid lengths, and mixed case.
 
 ## SEC-07: Output and client error handling need hardening
 
