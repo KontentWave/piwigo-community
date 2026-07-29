@@ -1,0 +1,43 @@
+# Plugin Integration Map
+
+Last updated: 2026-07-29
+
+## Piwigo core
+
+| Community surface    | Piwigo surface                                                                                | Contract and coupling                                                                                     | Risk                                                                                      |
+| -------------------- | --------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------- |
+| `main.inc.php` hooks | `init`, gallery/admin location hooks, `ws_add_methods`, `sendResponse`, deletion/cache events | Handler order and mutable globals control authorization and post-upload moderation.                       | Critical: admin status is changed before core webservice authorization.                   |
+| Upload webservices   | `pwg.images.add*`, `upload*`, `check*`, `uploadCompleted`                                     | Core methods are predominantly administrator surfaces; Community elevates a limited user to call them.    | Destination is not checked before elevation; future core changes can enlarge capability.  |
+| Image edit/delete    | `pwg.images.setInfo`, `pwg.images.delete`                                                     | Community filters image IDs by `added_by`, with extra session restriction for guest/generic users.        | Request arrays and global status are mutated; mixed/empty IDs need strict handling.       |
+| Album creation       | `pwg.categories.add`, `create_virtual_category()`                                             | Parent must be in effective create grants; user albums are provisioned lazily.                            | Creation and ownership assignment are separate writes.                                    |
+| Tags                 | `pwg.tags.add`, admin tag listing                                                             | Any Community-enabled user is elevated for tag creation; admin list is replaced with a Community wrapper. | Gallery-global tag namespace can be modified by limited uploaders.                        |
+| Upload storage       | `add_uploaded_file()`, upload buffer, PclZip                                                  | Plugin uses core persistence and archive library.                                                         | Quota/moderation occur after writes; archive limits are plugin-owned and absent.          |
+| Tables               | images, image-category, categories, users/groups, activity, config                            | Plugin adds `categories.community_user` and two plugin tables.                                            | Core-table column ownership complicates uninstall/migrations; MyISAM blocks transactions. |
+| Tokens/errors        | `get_pwg_token()`, `check_pwg_token()`, `PwgError`                                            | Member edit and completion use tokens; several admin pages do not.                                        | Error handling is inconsistent across page, hook, and webservice boundaries.              |
+| Cache                | user/category cache and plugin config cache key                                               | Random global key invalidates session permission caches.                                                  | Broad invalidation and eventual session refresh behavior.                                 |
+
+## Optional Two Factor plugin
+
+| Community surface                                     | Dependency                                                                                                                                                         | Behavior                                                                                                                                     | Risk                                                                                                                                                                |
+| ----------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `community_require_two_factor_for_album_management()` | `TF_REALPATH`; `tf_bootstrap_profile_liveness_guard_helpers`, `tf_is_profile_liveness_guard_eligible_user`, `tf_user_has_enabled_two_factor`, `tf_get_profile_url` | Includes helper file when discoverable and redirects eligible gallery users without enabled 2FA. In webservices it returns without redirect. | Fail-open if functions/constants are unavailable; direct function coupling has no declared version contract; webservice enforcement relies on surrounding behavior. |
+
+## Shared data and configuration
+
+| Name                                                                             | Owner/use                                                    |
+| -------------------------------------------------------------------------------- | ------------------------------------------------------------ |
+| `community_permissions`                                                          | Subject/scope grants, moderation flag, count/storage limits. |
+| `community_pendings`                                                             | Uploaded image moderation and notification state.            |
+| `categories.community_user`                                                      | One user-album ownership marker stored in a core table.      |
+| `conf['community']`                                                              | Serialized user-album configuration.                         |
+| `community_cache_key`                                                            | Global permission-cache revision token.                      |
+| `community_notify_admins`                                                        | Optional notification behavior read by upload completion.    |
+| Session `community_user_permissions`, `community_cache_key`, `community_user_id` | Effective permission cache.                                  |
+
+## High-risk coupling rules
+
+- Never grant core admin status to represent a Community capability.
+- Authorization must happen before core upload/category/tag writes, for every destination and object.
+- Plugin table and image/category/filesystem transitions need one recoverable workflow.
+- Changes to Piwigo webservice registration, handler priority, upload response shape, token rules, user status semantics, or category schema require Community regression tests.
+- Changes to Two Factor helper names, bootstrap constants, profile URL semantics, or webservice policy require an explicit compatibility review.
