@@ -26,6 +26,7 @@ define('COMMUNITY_PERMISSIONS_TABLE', $prefixeTable.'community_permissions');
 define('COMMUNITY_PENDINGS_TABLE', $prefixeTable.'community_pendings');
 
 include_once(COMMUNITY_PATH.'include/functions_community.inc.php');
+include_once(COMMUNITY_PATH.'include/original_sum_guard.inc.php');
 
 // init the plugin
 add_event_handler('init', 'community_init');
@@ -335,7 +336,7 @@ function community_switch_user_to_admin($arr)
   elseif ('pwg.images.add' == $community['method'])
   {
     $community['category'] = $_REQUEST['categories'];
-    $community['md5sum'] = $_REQUEST['original_sum'];
+    community_capture_original_sum_from_request($community, $_REQUEST);
   }
 
   if ('pwg.images.setInfo' == $community['method'])
@@ -551,6 +552,38 @@ function community_ws_replace_methods($arr)
     'community_ws_tags_getAdminList',
     array(),
     'administration method only'
+    );
+
+  $service->addMethod(
+    'pwg.images.add',
+    'community_ws_images_add',
+    array(
+      'thumbnail_sum' =>      array('default'=>null),
+      'high_sum' =>           array('default'=>null),
+      'original_sum' =>       array(),
+      'original_filename' =>  array('default'=>null,
+                                    'Provide it if "check_uniqueness" is true and $conf["uniqueness_mode"] is "filename".'),
+      'name' =>               array('default'=>null),
+      'author' =>             array('default'=>null),
+      'date_creation' =>      array('default'=>null),
+      'comment' =>            array('default'=>null),
+      'categories' =>         array('default'=>null,
+                                    'info'=>'String list "category_id[,rank];category_id[,rank]".<br>The rank is optional and is equivalent to "auto" if not given.'),
+      'tag_ids' =>            array('default'=>null,
+                                    'info'=>'Comma separated ids'),
+      'level' =>              array('default'=>0,
+                                    'maxValue'=>max($conf['available_permission_levels']),
+                                    'type'=>WS_TYPE_INT|WS_TYPE_POSITIVE),
+      'check_uniqueness' =>   array('default'=>true,
+                                    'type'=>WS_TYPE_BOOL),
+      'image_id' =>           array('default'=>null,
+                                    'type'=>WS_TYPE_ID),
+      ),
+    'Add an image.
+<br>pwg.images.addChunk must have been called before (maybe several times).
+<br>Don\'t use "thumbnail_sum" and "high_sum", these parameters are here for backward compatibility.',
+    null,
+    array('admin_only'=>true)
     );
 }
 
@@ -923,16 +956,17 @@ function community_sendResponse($encodedResponse)
     }
   }
   elseif ('pwg.images.add' == $community['method'])
-  {    
-    $query = '
-SELECT
-    id
-  FROM '.IMAGES_TABLE.'
-  WHERE md5sum = \''.$community['md5sum'].'\'
-  ORDER BY id DESC
-  LIMIT 1
-;';
-    list($image_id) = pwg_db_fetch_row(pwg_query($query));
+  {
+    if (!isset($community['md5sum']))
+    {
+      return;
+    }
+
+    $image_id = community_find_image_id_by_original_sum($community['md5sum']);
+    if (empty($image_id))
+    {
+      return;
+    }
   }
   else
   {
