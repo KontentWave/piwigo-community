@@ -1,2 +1,4 @@
 *:Zone.Identifier
 community.code-workspace
+.phpunit.cache/
+vendor/

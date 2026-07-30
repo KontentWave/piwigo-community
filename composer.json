@@ -1,0 +1,13 @@
+{
+    "name": "piwigo/community-test-tools",
+    "description": "Local test tooling for community plugin",
+    "require-dev": {
+        "phpunit/phpunit": "^11.5"
+    },
+    "authors": [
+        {
+            "name": "GitHub Copilot"
+        }
+    ],
+    "require": {}
+}

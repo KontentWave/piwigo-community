@@ -22,6 +22,10 @@ The same elevation grants `pwg.tags.add`, chunk/check methods, session status, a
 - For image mutation/deletion, authorize each image by owner and session policy immediately before the write.
 - Add deny-by-default tests for mixed allowed/disallowed category arrays and every elevated method.
 
+**Update 2026-07-30:** Slice 1 is completed for `pwg.images.addSimple` only. Community now replaces `pwg.images.addSimple` with a same-name wrapper for Community-enabled non-admin users, validates normalized destination categories against effective `upload_categories`, enforces owner and guest/generic session checks for `image_id` replacement, and removes `pwg.images.addSimple` from the ambient administrator-elevation allowlist.
+
+**Residual risk after Slice 1:** The broader SEC-01 finding remains open for the other upload transports and admin-only helper methods that still rely on ambient elevation or lack equivalent object and destination authorization.
+
 ## SEC-02: Missing CSRF protection on administrator mutations
 
 **Severity: High**

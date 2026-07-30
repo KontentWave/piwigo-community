@@ -2,7 +2,9 @@
 
 define('PHPWG_ROOT_PATH', dirname(__DIR__, 3) . '/');
 define('IN_WS', true);
+define('CATEGORIES_TABLE', 'piwigo_categories');
 define('IMAGES_TABLE', 'piwigo_images');
+define('ACTIVITY_TABLE', 'piwigo_activity');
 
 $prefixeTable = 'piwigo_';
 
@@ -106,6 +108,11 @@ function pwg_db_fetch_row($result)
 {
   $GLOBALS['community_test']['fetch_row_args'][] = $result;
 
+  if (!empty($GLOBALS['community_test']['fetch_row_returns']))
+  {
+    return array_shift($GLOBALS['community_test']['fetch_row_returns']);
+  }
+
   if (array_key_exists('fetch_row_return', $GLOBALS['community_test']))
   {
     return $GLOBALS['community_test']['fetch_row_return'];
@@ -116,30 +123,223 @@ function pwg_db_fetch_row($result)
 
 function pwg_db_fetch_assoc()
 {
+  if (!empty($GLOBALS['community_test']['fetch_assoc_return']))
+  {
+    return array_shift($GLOBALS['community_test']['fetch_assoc_return']);
+  }
+
   return false;
+}
+
+function get_pwg_token()
+{
+  return 'test-token';
+}
+
+function make_picture_url($params)
+{
+  $GLOBALS['community_test']['picture_urls'][] = $params;
+
+  return 'picture-url-' . $params['image_id'];
+}
+
+function single_update($table, $update, $where)
+{
+  $GLOBALS['community_test']['single_updates'][] = array(
+    'table' => $table,
+    'update' => $update,
+    'where' => $where,
+  );
+}
+
+function add_tags($tag_ids, $image_ids)
+{
+  $GLOBALS['community_test']['tag_updates'][] = array(
+    'tag_ids' => $tag_ids,
+    'image_ids' => $image_ids,
+  );
+}
+
+function sync_metadata($image_ids)
+{
+  $GLOBALS['community_test']['metadata_sync_calls'][] = $image_ids;
+}
+
+function invalidate_user_cache()
+{
+  $GLOBALS['community_test']['invalidate_user_cache_calls']++;
+}
+
+function tag_id_from_tag_name($tag_name)
+{
+  return strlen($tag_name);
+}
+
+function add_uploaded_file($tmp_name, $original_name, $categories, $level, $image_id = null)
+{
+  $GLOBALS['community_test']['add_uploaded_file_calls'][] = array(
+    'tmp_name' => $tmp_name,
+    'original_name' => $original_name,
+    'categories' => $categories,
+    'level' => $level,
+    'image_id' => $image_id,
+  );
+
+  if (isset($GLOBALS['community_test']['add_uploaded_file_callback']))
+  {
+    return call_user_func(
+      $GLOBALS['community_test']['add_uploaded_file_callback'],
+      $tmp_name,
+      $original_name,
+      $categories,
+      $level,
+      $image_id
+    );
+  }
+
+  return 987;
+}
+
+function ws_images_addSimple($params, $service)
+{
+  if (!isset($_FILES['image']))
+  {
+    return new PwgError(405, 'The image (file) is missing');
+  }
+
+  if (isset($_FILES['image']['error']) && $_FILES['image']['error'] != 0)
+  {
+    return new PwgError(500, 'Upload failed');
+  }
+
+  if ($params['image_id'] > 0)
+  {
+    $query = '
+SELECT COUNT(*)
+  FROM '. IMAGES_TABLE .'
+  WHERE id = '. $params['image_id'] .'
+;';
+    list($count) = pwg_db_fetch_row(pwg_query($query));
+    if ($count == 0)
+    {
+      return new PwgError(404, 'image_id not found');
+    }
+  }
+
+  $image_id = add_uploaded_file(
+    $_FILES['image']['tmp_name'],
+    $_FILES['image']['name'],
+    $params['category'],
+    8,
+    $params['image_id'] > 0 ? $params['image_id'] : null
+  );
+
+  $info_columns = array(
+    'name',
+    'author',
+    'comment',
+    'level',
+    'date_creation',
+  );
+
+  $update = array();
+  foreach ($info_columns as $key)
+  {
+    if (isset($params[$key]))
+    {
+      $update[$key] = $params[$key];
+    }
+  }
+
+  single_update(
+    IMAGES_TABLE,
+    $update,
+    array('id' => $image_id)
+  );
+
+  if (isset($params['tags']) and !empty($params['tags']))
+  {
+    $tag_ids = array();
+    if (is_array($params['tags']))
+    {
+      foreach ($params['tags'] as $tag_name)
+      {
+        $tag_ids[] = tag_id_from_tag_name($tag_name);
+      }
+    }
+    else
+    {
+      $tag_names = preg_split('~(?<!\\\\),~', $params['tags']);
+      foreach ($tag_names as $tag_name)
+      {
+        $tag_ids[] = tag_id_from_tag_name(preg_replace('#\\\\*,#', ',', $tag_name));
+      }
+    }
+
+    add_tags($tag_ids, array($image_id));
+  }
+
+  $url_params = array('image_id' => $image_id);
+
+  if (!empty($params['category']))
+  {
+    $query = '
+SELECT id, name, permalink
+  FROM '. CATEGORIES_TABLE .'
+  WHERE id = '. $params['category'][0] .'
+;';
+    $result = pwg_query($query);
+    $category = pwg_db_fetch_assoc($result);
+
+    $url_params['section'] = 'categories';
+    $url_params['category'] = $category;
+  }
+
+  sync_metadata(array($image_id));
+
+  return array(
+    'image_id' => $image_id,
+    'url' => make_picture_url($url_params),
+  );
 }
 
 function community_test_reset_runtime()
 {
   global $conf, $user, $community;
 
+  if (session_status() !== PHP_SESSION_ACTIVE)
+  {
+    session_id('test-session');
+    session_start();
+  }
+
   $GLOBALS['community_test'] = array(
     'queries' => array(),
     'escaped_values' => array(),
     'fetch_row_args' => array(),
+    'fetch_row_returns' => array(),
+    'fetch_assoc_return' => array(),
     'status_headers' => array(),
     'is_admin' => false,
+    'add_uploaded_file_calls' => array(),
+    'single_updates' => array(),
+    'tag_updates' => array(),
+    'metadata_sync_calls' => array(),
+    'picture_urls' => array(),
+    'invalidate_user_cache_calls' => 0,
   );
 
   unset(
     $GLOBALS['community_ws_images_add_delegate'],
-    $GLOBALS['community_ws_images_add_chunk_delegate']
+    $GLOBALS['community_ws_images_add_chunk_delegate'],
+    $GLOBALS['community_ws_images_add_simple_delegate']
   );
 
   $_GET = array();
   $_POST = array();
   $_REQUEST = array();
   $_SESSION = array();
+  $_FILES = array();
 
   $conf = array(
     'community' => array('user_albums' => false),
@@ -224,6 +424,37 @@ function community_test_register_core_upload_methods($arr)
     PHPWG_ROOT_PATH . 'include/ws_functions/pwg.images.php',
     array('admin_only' => true)
   );
+
+  $service->addMethod(
+    'pwg.images.addSimple',
+    'ws_images_addSimple',
+    array(
+      'category' => array(
+        'default' => null,
+        'flags' => WS_PARAM_FORCE_ARRAY,
+        'type' => WS_TYPE_ID,
+      ),
+      'name' => array('default' => null),
+      'author' => array('default' => null),
+      'comment' => array('default' => null),
+      'level' => array(
+        'default' => 0,
+        'maxValue' => max($conf['available_permission_levels']),
+        'type' => WS_TYPE_INT | WS_TYPE_POSITIVE,
+      ),
+      'tags' => array(
+        'default' => null,
+        'flags' => WS_PARAM_ACCEPT_ARRAY,
+      ),
+      'image_id' => array(
+        'default' => null,
+        'type' => WS_TYPE_ID,
+      ),
+    ),
+    "Add an image.\n<br>Use the <b>_FILES[image]</b> field for uploading file.\n<br>Set the form encoding to \"form-data\".\n<br>You can update an existing photo if you define an existing image_id.",
+    PHPWG_ROOT_PATH . 'include/ws_functions/pwg.images.php',
+    array('admin_only' => true, 'post_only' => true)
+  );
 }
 
 function community_test_get_registered_method($service, $method_name)
@@ -240,7 +471,11 @@ function community_test_build_service($method_name, $request = array(), $is_admi
 {
   global $pwg_event_handlers, $user;
 
+  $files = $_FILES;
+
   community_test_reset_runtime();
+
+  $_FILES = $files;
 
   $GLOBALS['community_test']['is_admin'] = $is_admin;
   $user['id'] = $is_admin ? 1 : 2;

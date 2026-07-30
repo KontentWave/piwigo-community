@@ -321,11 +321,7 @@ function community_switch_user_to_admin($arr)
   
   $community = array('method' => $_REQUEST['method']);
 
-  if ('pwg.images.addSimple' == $community['method'])
-  {
-    $community['category'] = $_REQUEST['category'];
-  }
-  elseif ('pwg.images.upload' == $community['method'])
+  if ('pwg.images.upload' == $community['method'])
   {
     $community['category'] = $_REQUEST['category'];
   }
@@ -389,7 +385,6 @@ function community_switch_user_to_admin($arr)
   $methods[] = 'pwg.tags.add';
   $methods[] = 'pwg.images.exist';
   $methods[] = 'pwg.images.add';
-  $methods[] = 'pwg.images.addSimple';
   $methods[] = 'pwg.images.addChunk';
   $methods[] = 'pwg.images.upload';
   $methods[] = 'pwg.images.checkUpload';
@@ -584,6 +579,40 @@ function community_ws_replace_methods($arr)
 <br>Don\'t use "thumbnail_sum" and "high_sum", these parameters are here for backward compatibility.',
     null,
     array('admin_only'=>true)
+    );
+
+  $service->addMethod(
+    'pwg.images.addSimple',
+    'community_ws_images_add_simple',
+    array(
+      'category' => array(
+        'default' => null,
+        'flags' => WS_PARAM_FORCE_ARRAY,
+        'type' => WS_TYPE_ID,
+      ),
+      'name' => array('default' => null),
+      'author' => array('default' => null),
+      'comment' => array('default' => null),
+      'level' => array(
+        'default' => 0,
+        'maxValue' => max($conf['available_permission_levels']),
+        'type' => WS_TYPE_INT|WS_TYPE_POSITIVE,
+      ),
+      'tags' => array(
+        'default' => null,
+        'flags' => WS_PARAM_ACCEPT_ARRAY,
+      ),
+      'image_id' => array(
+        'default' => null,
+        'type' => WS_TYPE_ID,
+      ),
+      ),
+    'Add an image.
+<br>Use the <b>_FILES[image]</b> field for uploading file.
+<br>Set the form encoding to "form-data".
+<br>You can update an existing photo if you define an existing image_id.',
+    null,
+    array('post_only' => true)
     );
 
   $service->addMethod(

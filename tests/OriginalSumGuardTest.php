@@ -1,5 +1,6 @@
 <?php
 
+use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 
 class OriginalSumGuardTest extends TestCase
@@ -12,25 +13,282 @@ class OriginalSumGuardTest extends TestCase
   public function testNonAdminLifecycleRegistersCommunityWrappers()
   {
     $service = community_test_build_service(
-      'pwg.images.add',
+      'pwg.images.addSimple',
       array(
-        'categories' => '1',
-        'original_sum' => 'AaBbCcDd00112233445566778899EeFf',
+        'category' => '1',
       )
     );
 
+    $addSimpleMethod = community_test_get_registered_method($service, 'pwg.images.addSimple');
     $addMethod = community_test_get_registered_method($service, 'pwg.images.add');
     $chunkMethod = community_test_get_registered_method($service, 'pwg.images.addChunk');
 
+    $this->assertSame('community_ws_images_add_simple', $addSimpleMethod['callback']);
+    $this->assertSame(array('post_only' => true), $addSimpleMethod['options']);
     $this->assertSame('community_ws_images_add', $addMethod['callback']);
     $this->assertSame('community_ws_images_add_chunk', $chunkMethod['callback']);
     $this->assertSame(array('admin_only' => true), $addMethod['options']);
     $this->assertSame(array('admin_only' => true, 'post_only' => true), $chunkMethod['options']);
   }
 
-  /**
-   * @dataProvider provideInvalidChecksums
-   */
+  public function testNonAdminAddSimpleLifecycleAuthorizedSingleCategoryDelegatesOnceWithoutStatusElevation()
+  {
+    global $user;
+
+    $_FILES['image'] = array(
+      'tmp_name' => '/tmp/uploaded-file',
+      'name' => 'upload.jpg',
+      'error' => 0,
+    );
+
+    $service = community_test_build_service(
+      'pwg.images.addSimple',
+      array('category' => '1')
+    );
+
+    $delegateCalls = 0;
+    $statusBefore = $user['status'];
+    $GLOBALS['community_test']['add_uploaded_file_callback'] = function ($tmpName, $originalName, $categories, $level, $imageId) use (&$delegateCalls, &$user, $statusBefore) {
+      $delegateCalls++;
+      TestCase::assertSame('normal', $user['status']);
+      TestCase::assertSame($statusBefore, $user['status']);
+      TestCase::assertSame('/tmp/uploaded-file', $tmpName);
+      TestCase::assertSame('upload.jpg', $originalName);
+      TestCase::assertSame(array(1), $categories);
+      TestCase::assertSame(8, $level);
+      TestCase::assertNull($imageId);
+
+      return 321;
+    };
+    $GLOBALS['community_test']['fetch_assoc_return'] = array(
+      array('id' => 1, 'name' => 'Album', 'permalink' => 'album'),
+    );
+
+    $result = $service->invoke('pwg.images.addSimple', array('category' => '1'));
+
+    $this->assertSame(array('image_id' => 321, 'url' => 'picture-url-321'), $result);
+    $this->assertSame('normal', $user['status']);
+    $this->assertSame(1, $delegateCalls);
+    $this->assertCount(1, $GLOBALS['community_test']['add_uploaded_file_calls']);
+    $this->assertCount(1, $GLOBALS['community_test']['single_updates']);
+    $this->assertSame(array(array(321)), $GLOBALS['community_test']['metadata_sync_calls']);
+  }
+
+  public function testNonAdminAddSimpleLifecycleAuthorizedMultiCategoryDelegatesOnce()
+  {
+    $_FILES['image'] = array(
+      'tmp_name' => '/tmp/uploaded-file',
+      'name' => 'upload.jpg',
+      'error' => 0,
+    );
+
+    $service = community_test_build_service(
+      'pwg.images.addSimple',
+      array('category' => array('1', '2'))
+    );
+    $_SESSION['community_user_permissions']['upload_categories'] = array(1, 2);
+
+    $delegateCalls = 0;
+    $GLOBALS['community_test']['add_uploaded_file_callback'] = function ($tmpName, $originalName, $categories) use (&$delegateCalls) {
+      $delegateCalls++;
+      TestCase::assertSame(array(1, 2), $categories);
+
+      return 654;
+    };
+    $GLOBALS['community_test']['fetch_assoc_return'] = array(
+      array('id' => 1, 'name' => 'Album', 'permalink' => 'album'),
+    );
+
+    $result = $service->invoke('pwg.images.addSimple', array('category' => array('1', '2')));
+
+    $this->assertSame(array('image_id' => 654, 'url' => 'picture-url-654'), $result);
+    $this->assertSame(1, $delegateCalls);
+  }
+
+  #[DataProvider('provideRejectedAddSimpleCategories')]
+  public function testNonAdminAddSimpleLifecycleRejectsInvalidOrUnauthorizedCategoriesAtomically($input, $expectedCode)
+  {
+    $_FILES['image'] = array(
+      'tmp_name' => '/tmp/uploaded-file',
+      'name' => 'upload.jpg',
+      'error' => 0,
+    );
+
+    $service = community_test_build_service(
+      'pwg.images.addSimple',
+      array('category' => 1)
+    );
+
+    $result = $service->invoke('pwg.images.addSimple', array('category' => $input));
+
+    $this->assertInstanceOf(PwgError::class, $result);
+    $this->assertSame($expectedCode, $result->code());
+    if (401 === $expectedCode)
+    {
+      $this->assertSame('Access denied', $result->message());
+    }
+    $this->assertSame(array(), $GLOBALS['community_test']['add_uploaded_file_calls']);
+    $this->assertSame(array(), $GLOBALS['community_test']['single_updates']);
+    $this->assertSame(array(), $GLOBALS['community_test']['metadata_sync_calls']);
+    $this->assertSame(array(), $GLOBALS['community_test']['queries']);
+  }
+
+  public function testNonAdminAddSimpleLifecycleRejectsWhenUserHasOnlyCategoryCreationRights()
+  {
+    $_FILES['image'] = array(
+      'tmp_name' => '/tmp/uploaded-file',
+      'name' => 'upload.jpg',
+      'error' => 0,
+    );
+
+    $service = community_test_build_service(
+      'pwg.images.addSimple',
+      array('category' => '1')
+    );
+
+    $_SESSION['community_user_permissions']['upload_categories'] = array();
+    $_SESSION['community_user_permissions']['create_categories'] = array(1);
+
+    $result = $service->invoke('pwg.images.addSimple', array('category' => '1'));
+
+    $this->assertInstanceOf(PwgError::class, $result);
+    $this->assertSame(401, $result->code());
+    $this->assertSame('Access denied', $result->message());
+    $this->assertSame(array(), $GLOBALS['community_test']['add_uploaded_file_calls']);
+    $this->assertSame(array(), $GLOBALS['community_test']['queries']);
+  }
+
+  public function testNonAdminAddSimpleLifecycleAllowsReplacementOfOwnersOwnImage()
+  {
+    global $user;
+
+    $_FILES['image'] = array(
+      'tmp_name' => '/tmp/uploaded-file',
+      'name' => 'replacement.jpg',
+      'error' => 0,
+    );
+
+    $service = community_test_build_service(
+      'pwg.images.addSimple',
+      array('category' => '1', 'image_id' => 77)
+    );
+
+    $GLOBALS['community_test']['fetch_row_return'] = array('1');
+    $GLOBALS['community_test']['add_uploaded_file_callback'] = function ($tmpName, $originalName, $categories, $level, $imageId) use (&$user) {
+      TestCase::assertSame('normal', $user['status']);
+      TestCase::assertSame(77, $imageId);
+      TestCase::assertSame(array(1), $categories);
+
+      return 77;
+    };
+    $GLOBALS['community_test']['fetch_assoc_return'] = array(
+      array('id' => 1, 'name' => 'Album', 'permalink' => 'album'),
+    );
+
+    $result = $service->invoke('pwg.images.addSimple', array('category' => '1', 'image_id' => 77));
+
+    $this->assertSame(array('image_id' => 77, 'url' => 'picture-url-77'), $result);
+    $this->assertStringContainsString('WHERE id = 77', $GLOBALS['community_test']['queries'][0]);
+    $this->assertStringContainsString('added_by` = 2', $GLOBALS['community_test']['queries'][0]);
+  }
+
+  public function testNonAdminAddSimpleLifecycleDeniesReplacementOfAnotherUsersImage()
+  {
+    $_FILES['image'] = array(
+      'tmp_name' => '/tmp/uploaded-file',
+      'name' => 'replacement.jpg',
+      'error' => 0,
+    );
+
+    $service = community_test_build_service(
+      'pwg.images.addSimple',
+      array('category' => '1', 'image_id' => 77)
+    );
+
+    $GLOBALS['community_test']['fetch_row_return'] = array('0');
+
+    $result = $service->invoke('pwg.images.addSimple', array('category' => '1', 'image_id' => 77));
+
+    $this->assertInstanceOf(PwgError::class, $result);
+    $this->assertSame(401, $result->code());
+    $this->assertSame('Access denied', $result->message());
+    $this->assertSame(array(), $GLOBALS['community_test']['add_uploaded_file_calls']);
+    $this->assertStringContainsString('added_by` = 2', $GLOBALS['community_test']['queries'][0]);
+  }
+
+  public function testGenericUserAddSimpleLifecycleLimitsReplacementToCurrentSession()
+  {
+    global $user;
+
+    $_FILES['image'] = array(
+      'tmp_name' => '/tmp/uploaded-file',
+      'name' => 'replacement.jpg',
+      'error' => 0,
+    );
+
+    $service = community_test_build_service(
+      'pwg.images.addSimple',
+      array('category' => '1', 'image_id' => 77)
+    );
+
+    $user['status'] = 'generic';
+    $GLOBALS['community_test']['fetch_row_returns'] = array(
+      array('1'),
+      array('0'),
+    );
+
+    $result = $service->invoke('pwg.images.addSimple', array('category' => '1', 'image_id' => 77));
+
+    $this->assertInstanceOf(PwgError::class, $result);
+    $this->assertSame(401, $result->code());
+    $this->assertSame('Access denied', $result->message());
+    $this->assertCount(2, $GLOBALS['community_test']['queries']);
+    $this->assertStringContainsString('session_idx', $GLOBALS['community_test']['queries'][1]);
+    $this->assertSame(array(), $GLOBALS['community_test']['add_uploaded_file_calls']);
+  }
+
+  public function testGenericUserAddSimpleLifecycleAllowsReplacementForCurrentSessionImage()
+  {
+    global $user;
+
+    $_FILES['image'] = array(
+      'tmp_name' => '/tmp/uploaded-file',
+      'name' => 'replacement.jpg',
+      'error' => 0,
+    );
+
+    $service = community_test_build_service(
+      'pwg.images.addSimple',
+      array('category' => '1', 'image_id' => 77)
+    );
+
+    $user['status'] = 'generic';
+    $GLOBALS['community_test']['fetch_row_returns'] = array(
+      array('1'),
+      array('1'),
+      array('1'),
+    );
+    $GLOBALS['community_test']['fetch_assoc_return'] = array(
+      array('id' => 1, 'name' => 'Album', 'permalink' => 'album'),
+    );
+    $GLOBALS['community_test']['queries'] = array();
+    $GLOBALS['community_test']['add_uploaded_file_callback'] = function ($tmpName, $originalName, $categories, $level, $imageId) {
+      TestCase::assertSame(77, $imageId);
+
+      return 77;
+    };
+
+    $result = $service->invoke('pwg.images.addSimple', array('category' => '1', 'image_id' => 77));
+
+    $this->assertSame(array('image_id' => 77, 'url' => 'picture-url-77'), $result);
+    $this->assertCount(4, $GLOBALS['community_test']['queries']);
+    $this->assertStringContainsString('added_by` = 2', $GLOBALS['community_test']['queries'][0]);
+    $this->assertStringContainsString('session_idx', $GLOBALS['community_test']['queries'][1]);
+    $this->assertStringContainsString('WHERE id = 77', $GLOBALS['community_test']['queries'][2]);
+    $this->assertStringContainsString('FROM '. CATEGORIES_TABLE, $GLOBALS['community_test']['queries'][3]);
+  }
+
+  #[DataProvider('provideInvalidChecksums')]
   public function testNonAdminAddLifecycleRejectsInvalidChecksumsBeforeDelegate($checksum)
   {
     $service = community_test_build_service(
@@ -96,9 +354,7 @@ class OriginalSumGuardTest extends TestCase
     $this->assertSame(array(), $GLOBALS['community_test']['queries']);
   }
 
-  /**
-   * @dataProvider provideInvalidChecksums
-   */
+  #[DataProvider('provideInvalidChecksums')]
   public function testNonAdminAddChunkLifecycleRejectsInvalidChecksumsBeforeDelegate($checksum)
   {
     $service = community_test_build_service('pwg.images.addChunk');
@@ -224,21 +480,40 @@ class OriginalSumGuardTest extends TestCase
   public function testAdministratorLifecycleKeepsCoreCallbacksUntouched()
   {
     $service = community_test_build_service(
-      'pwg.images.add',
+      'pwg.images.addSimple',
       array(
-        'categories' => '1',
-        'original_sum' => 'AaBbCcDd00112233445566778899EeFf',
+        'category' => '1',
       ),
       true
     );
 
+    $addSimpleMethod = community_test_get_registered_method($service, 'pwg.images.addSimple');
     $addMethod = community_test_get_registered_method($service, 'pwg.images.add');
     $chunkMethod = community_test_get_registered_method($service, 'pwg.images.addChunk');
 
+    $this->assertSame('ws_images_addSimple', $addSimpleMethod['callback']);
+    $this->assertSame(array('admin_only' => true, 'post_only' => true), $addSimpleMethod['options']);
     $this->assertSame('ws_images_add', $addMethod['callback']);
     $this->assertSame('ws_images_add_chunk', $chunkMethod['callback']);
     $this->assertSame(array('admin_only' => true), $addMethod['options']);
     $this->assertSame(array('admin_only' => true, 'post_only' => true), $chunkMethod['options']);
+  }
+
+  public function testAddSimpleLifecycleFakedByCommunityFalseKeepsExistingBehavior()
+  {
+    $_REQUEST['faked_by_community'] = 'false';
+    $service = community_test_build_service(
+      'pwg.images.addSimple',
+      array(
+        'category' => '1',
+        'faked_by_community' => 'false',
+      )
+    );
+
+    $method = community_test_get_registered_method($service, 'pwg.images.addSimple');
+
+    $this->assertSame('ws_images_addSimple', $method['callback']);
+    $this->assertSame(array('admin_only' => true, 'post_only' => true), $method['options']);
   }
 
   public function testLookupQueryEscapesChecksumBeforeSqlInterpolation()
@@ -298,6 +573,20 @@ class OriginalSumGuardTest extends TestCase
       'too short' => array('abcd1234'),
       'too long' => array('abcd1234abcd1234abcd1234abcd123400'),
       'non hex' => array('zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz'),
+    );
+  }
+
+  public static function provideRejectedAddSimpleCategories()
+  {
+    return array(
+      'missing' => array(null, 401),
+      'zero' => array('0', 1003),
+      'negative' => array('-1', 1003),
+      'malformed string' => array('abc', 1003),
+      'unauthorized scalar' => array('2', 401),
+      'mixed scalar list' => array(array('1', '2'), 401),
+      'empty array' => array(array(), 401),
+      'malformed array member' => array(array('1', 'abc'), 1003),
     );
   }
 }
