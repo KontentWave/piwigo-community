@@ -509,11 +509,11 @@ function community_add_methods($arr)
 add_event_handler('ws_add_methods', 'community_ws_replace_methods', EVENT_HANDLER_PRIORITY_NEUTRAL+5);
 function community_ws_replace_methods($arr)
 {
-  global $conf, $user;
+  global $community, $conf, $user;
   
   $service = &$arr[0];
 
-  if (is_admin())
+  if (is_admin() and empty($community['method']))
   {
     return;
   }
@@ -584,6 +584,23 @@ function community_ws_replace_methods($arr)
 <br>Don\'t use "thumbnail_sum" and "high_sum", these parameters are here for backward compatibility.',
     null,
     array('admin_only'=>true)
+    );
+
+  $service->addMethod(
+    'pwg.images.addChunk',
+    'community_ws_images_add_chunk',
+    array(
+      'data' => array(),
+      'original_sum' => array(),
+      'type' => array(
+        'default' => 'file',
+        'info' => 'Must be "file", for backward compatiblity "high" and "thumb" are allowed.',
+      ),
+      'position' => array(),
+    ),
+    'Add a chunk of a file.',
+    null,
+    array('admin_only' => true, 'post_only' => true)
     );
 }
 

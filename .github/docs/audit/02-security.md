@@ -77,6 +77,12 @@ Any Community-enabled caller elevated for `pwg.images.add` can supply an arbitra
 
 **Remediation:** Reject `original_sum` unless it matches exactly 32 hexadecimal characters at the first Community boundary and independently in every core method that consumes it. Escape values or use structured database helpers for every query; do not rely on format validation as the SQL defense. Quote checksum values used in regular expressions with `preg_quote()` and derive buffer names from server-generated identifiers. Add adversarial tests covering quotes, regex metacharacters, separators, traversal characters, invalid lengths, and mixed case.
 
+**Update 2026-07-30:** Community now replaces both `pwg.images.add` and `pwg.images.addChunk` with same-name wrappers that preserve the core parameter schema but reject non-hex 32-character `original_sum` values before delegating. The plugin also performs an escaped filename uniqueness precheck when `check_uniqueness=true` and `$conf['uniqueness_mode'] === 'filename'`, then disables the downstream core filename uniqueness branch for that request so raw `original_filename` does not reach Piwigo's legacy SQL. The post-upload Community checksum lookup now escapes `md5sum` before interpolation.
+
+**Acceptance evidence 2026-07-30:** PHPUnit lifecycle coverage proves the real Community `ws_add_methods` sequence activates the plugin wrappers for non-admin requests, preserves untouched core callbacks for genuine administrators, rejects adversarial checksums before delegate invocation or plugin SQL, delegates mixed-case valid checksums exactly once for both `pwg.images.add` and `pwg.images.addChunk`, and preserves duplicate/non-duplicate filename uniqueness behavior while preventing quote/metacharacter filenames from altering SQL structure.
+
+**Residual risk:** This remediation depends on Community's wrappers remaining the final registrations for `pwg.images.add` and `pwg.images.addChunk` during `ws_add_methods`. The broader authorization problem described in SEC-01 remains open, so checksum and filename interception are fixed without changing the underlying ambient-admin design.
+
 ## SEC-07: Output and client error handling need hardening
 
 **Severity: Low**

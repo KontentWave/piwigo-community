@@ -39,6 +39,48 @@ function community_call_ws_images_add($params, $service)
   return ws_images_add($params, $service);
 }
 
+function community_call_ws_images_add_chunk($params, $service)
+{
+  if (isset($GLOBALS['community_ws_images_add_chunk_delegate']))
+  {
+    return call_user_func($GLOBALS['community_ws_images_add_chunk_delegate'], $params, $service);
+  }
+
+  if (!function_exists('ws_images_add_chunk'))
+  {
+    include_once(PHPWG_ROOT_PATH.'include/ws_functions/pwg.images.php');
+  }
+
+  return ws_images_add_chunk($params, $service);
+}
+
+function community_maybe_precheck_original_filename_uniqueness(&$params)
+{
+  global $conf;
+
+  if (empty($params['check_uniqueness']) || 'filename' != $conf['uniqueness_mode'])
+  {
+    return null;
+  }
+
+  $original_filename = isset($params['original_filename']) ? (string) $params['original_filename'] : '';
+  $query = '
+SELECT COUNT(*)
+  FROM '.IMAGES_TABLE.'
+  WHERE file = \''.pwg_db_real_escape_string($original_filename).'\'
+;';
+
+  list($counter) = pwg_db_fetch_row(pwg_query($query));
+  if ($counter != 0)
+  {
+    return new PwgError(500, 'file already exists');
+  }
+
+  $params['check_uniqueness'] = false;
+
+  return null;
+}
+
 function community_ws_images_add($params, $service)
 {
   if (!isset($params['original_sum']) || !community_is_valid_original_sum($params['original_sum']))
@@ -46,7 +88,23 @@ function community_ws_images_add($params, $service)
     return community_invalid_original_sum_error();
   }
 
+  $filename_uniqueness_error = community_maybe_precheck_original_filename_uniqueness($params);
+  if (isset($filename_uniqueness_error))
+  {
+    return $filename_uniqueness_error;
+  }
+
   return community_call_ws_images_add($params, $service);
+}
+
+function community_ws_images_add_chunk($params, $service)
+{
+  if (!isset($params['original_sum']) || !community_is_valid_original_sum($params['original_sum']))
+  {
+    return community_invalid_original_sum_error();
+  }
+
+  return community_call_ws_images_add_chunk($params, $service);
 }
 
 function community_find_image_id_by_original_sum($original_sum)

@@ -16,6 +16,7 @@ Target: first patch release.
 
 1. Replace `community_switch_user_to_admin` with Community-owned, method-specific adapters.
 2. Reject legacy upload checksums that are not exactly 32 hexadecimal characters before filesystem or SQL use, and remove raw checksum interpolation.
+   Status 2026-07-30: completed in plugin-owned wrappers for `pwg.images.add` and `pwg.images.addChunk`, with escaped Community checksum lookup and escaped filename uniqueness precheck for the legacy `original_filename` SQL path.
 3. Validate all category IDs against effective grants before any upload/chunk write.
 4. Bind chunk state to actor, destination, checksum, size, and expiry.
 5. Add ownership/category checks to upload completion, image replacement, format attachment, update mode, and other image mutation.
@@ -27,6 +28,8 @@ Acceptance tests:
 - A user granted album A cannot upload, chunk, complete, edit, or delete in album B.
 - A user cannot replace another owner's image, attach a format to it, or target it through upload update mode.
 - Invalid or adversarial `original_sum` values are rejected before creating buffer files or issuing queries.
+- `pwg.images.add` and `pwg.images.addChunk` activate Community wrappers in the real `ws_add_methods` lifecycle for non-admin requests, while genuine administrators retain the untouched core callbacks.
+- Quote and metacharacter `original_filename` values cannot alter filename uniqueness SQL structure, and valid duplicate/non-duplicate filename behavior remains unchanged.
 - A mixed `[A, B]` destination request fails entirely.
 - A user with upload rights cannot gain unrelated admin webservice behavior.
 - Missing, stale, and forged CSRF tokens cause zero writes.
