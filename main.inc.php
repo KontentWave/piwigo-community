@@ -321,11 +321,7 @@ function community_switch_user_to_admin($arr)
   
   $community = array('method' => $_REQUEST['method']);
 
-  if ('pwg.images.upload' == $community['method'])
-  {
-    $community['category'] = $_REQUEST['category'];
-  }
-  elseif ('pwg.images.uploadAsync' == $community['method'])
+  if ('pwg.images.uploadAsync' == $community['method'])
   {
     $community['category'] = $_REQUEST['category'];
   }
@@ -386,7 +382,6 @@ function community_switch_user_to_admin($arr)
   $methods[] = 'pwg.images.exist';
   $methods[] = 'pwg.images.add';
   $methods[] = 'pwg.images.addChunk';
-  $methods[] = 'pwg.images.upload';
   $methods[] = 'pwg.images.checkUpload';
   $methods[] = 'pwg.images.checkFiles';
   $methods[] = 'pwg.session.getStatus';
@@ -630,6 +625,40 @@ function community_ws_replace_methods($arr)
     'Add a chunk of a file.',
     null,
     array('admin_only' => true, 'post_only' => true)
+    );
+
+  $service->addMethod(
+    'pwg.images.upload',
+    'community_ws_images_upload',
+    array(
+      'name' => array('default' => null),
+      'category' => array(
+        'default' => null,
+        'flags' => WS_PARAM_FORCE_ARRAY,
+        'type' => WS_TYPE_ID,
+      ),
+      'level' => array(
+        'default' => 0,
+        'maxValue' => max($conf['available_permission_levels']),
+        'type' => WS_TYPE_INT|WS_TYPE_POSITIVE,
+      ),
+      'format_of' => array(
+        'default' => null,
+        'type' => WS_TYPE_ID,
+        'info' => 'id of the extended image (name/category/level are not used if format_of is provided)',
+      ),
+      'update_mode' => array(
+        'default' => false,
+        'type' => WS_TYPE_BOOL,
+        'info' => 'true if the update mode is active',
+      ),
+      'pwg_token' => array(),
+    ),
+    'Add an image.
+<br>Use the <b>$_FILES[image]</b> field for uploading file.
+<br>Set the form encoding to "form-data".',
+    null,
+    array('post_only' => true)
     );
 }
 

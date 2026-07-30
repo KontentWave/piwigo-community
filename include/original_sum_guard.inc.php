@@ -69,12 +69,27 @@ function community_call_ws_images_add_simple($params, $service)
   return ws_images_addSimple($params, $service);
 }
 
-function community_add_simple_access_denied_error()
+function community_call_ws_images_upload($params, $service)
+{
+  if (isset($GLOBALS['community_ws_images_upload_delegate']))
+  {
+    return call_user_func($GLOBALS['community_ws_images_upload_delegate'], $params, $service);
+  }
+
+  if (!function_exists('ws_images_upload'))
+  {
+    include_once(PHPWG_ROOT_PATH.'include/ws_functions/pwg.images.php');
+  }
+
+  return ws_images_upload($params, $service);
+}
+
+function community_access_denied_error()
 {
   return new PwgError(401, 'Access denied');
 }
 
-function community_normalize_add_simple_categories($categories)
+function community_normalize_upload_category_ids($categories)
 {
   if (is_array($categories))
   {
@@ -121,11 +136,11 @@ function community_normalize_add_simple_categories($categories)
   return $normalized_categories;
 }
 
-function community_authorize_add_simple_categories($categories)
+function community_authorize_upload_categories($categories)
 {
   global $user;
 
-  $normalized_categories = community_normalize_add_simple_categories($categories);
+  $normalized_categories = community_normalize_upload_category_ids($categories);
   if (empty($normalized_categories))
   {
     return null;
@@ -149,7 +164,7 @@ function community_authorize_add_simple_categories($categories)
   return $normalized_categories;
 }
 
-function community_user_can_replace_add_simple_image($image_id)
+function community_user_can_mutate_uploaded_image($image_id)
 {
   global $user;
 
@@ -189,25 +204,88 @@ function community_ws_images_add_simple($params, $service)
 {
   global $community;
 
-  $authorized_categories = community_authorize_add_simple_categories(
+  $authorized_categories = community_authorize_upload_categories(
     isset($params['category']) ? $params['category'] : null
   );
   if (empty($authorized_categories))
   {
-    return community_add_simple_access_denied_error();
+    return community_access_denied_error();
   }
 
   $params['category'] = $authorized_categories;
 
-  if (!empty($params['image_id']) and !community_user_can_replace_add_simple_image($params['image_id']))
+  if (!empty($params['image_id']) and !community_user_can_mutate_uploaded_image($params['image_id']))
   {
-    return community_add_simple_access_denied_error();
+    return community_access_denied_error();
   }
 
   $result = community_call_ws_images_add_simple($params, $service);
   if (!($result instanceof PwgError))
   {
     $community['method'] = 'pwg.images.addSimple';
+    $community['category'] = $authorized_categories[0];
+  }
+
+  return $result;
+}
+
+function community_find_update_mode_image_id($category_id, $name)
+{
+  $escaped_name = pwg_db_real_escape_string(stripslashes($name));
+  $query = '
+SELECT
+    i.id
+  FROM '.IMAGES_TABLE.' AS i
+    INNER JOIN '.IMAGE_CATEGORY_TABLE.' AS ic ON ic.image_id = i.id
+  WHERE i.file = \''.$escaped_name.'\'
+    AND ic.category_id = '.(int) $category_id.'
+;';
+  $images = query2array($query);
+
+  if (empty($images))
+  {
+    return null;
+  }
+
+  return (int) $images[0]['id'];
+}
+
+function community_ws_images_upload($params, $service)
+{
+  global $community;
+
+  $authorized_categories = community_authorize_upload_categories(
+    isset($params['category']) ? $params['category'] : null
+  );
+  if (empty($authorized_categories))
+  {
+    return community_access_denied_error();
+  }
+
+  $params['category'] = $authorized_categories;
+
+  if (!empty($params['format_of']) and !community_user_can_mutate_uploaded_image($params['format_of']))
+  {
+    return community_access_denied_error();
+  }
+
+  if (!empty($params['update_mode']))
+  {
+    $update_image_id = community_find_update_mode_image_id(
+      $authorized_categories[0],
+      isset($params['name']) ? $params['name'] : ''
+    );
+
+    if (isset($update_image_id) and !community_user_can_mutate_uploaded_image($update_image_id))
+    {
+      return community_access_denied_error();
+    }
+  }
+
+  $result = community_call_ws_images_upload($params, $service);
+  if (!($result instanceof PwgError))
+  {
+    $community['method'] = 'pwg.images.upload';
     $community['category'] = $authorized_categories[0];
   }
 

@@ -303,6 +303,19 @@ SELECT id, name, permalink
   );
 }
 
+function ws_images_upload($params, $service)
+{
+  if (isset($GLOBALS['community_ws_images_upload_delegate']))
+  {
+    return call_user_func($GLOBALS['community_ws_images_upload_delegate'], $params, $service);
+  }
+
+  return array(
+    'image_id' => 456,
+    'category' => array('id' => $params['category'][0]),
+  );
+}
+
 function community_test_reset_runtime()
 {
   global $conf, $user, $community;
@@ -332,7 +345,8 @@ function community_test_reset_runtime()
   unset(
     $GLOBALS['community_ws_images_add_delegate'],
     $GLOBALS['community_ws_images_add_chunk_delegate'],
-    $GLOBALS['community_ws_images_add_simple_delegate']
+    $GLOBALS['community_ws_images_add_simple_delegate'],
+    $GLOBALS['community_ws_images_upload_delegate']
   );
 
   $_GET = array();
@@ -453,6 +467,38 @@ function community_test_register_core_upload_methods($arr)
     ),
     "Add an image.\n<br>Use the <b>_FILES[image]</b> field for uploading file.\n<br>Set the form encoding to \"form-data\".\n<br>You can update an existing photo if you define an existing image_id.",
     PHPWG_ROOT_PATH . 'include/ws_functions/pwg.images.php',
+    array('admin_only' => true, 'post_only' => true)
+  );
+
+  $service->addMethod(
+    'pwg.images.upload',
+    'ws_images_upload',
+    array(
+      'name' => array('default' => null),
+      'category' => array(
+        'default' => null,
+        'flags' => WS_PARAM_FORCE_ARRAY,
+        'type' => WS_TYPE_ID,
+      ),
+      'level' => array(
+        'default' => 0,
+        'maxValue' => max($conf['available_permission_levels']),
+        'type' => WS_TYPE_INT | WS_TYPE_POSITIVE,
+      ),
+      'format_of' => array(
+        'default' => null,
+        'type' => WS_TYPE_ID,
+        'info' => 'id of the extended image (name/category/level are not used if format_of is provided)',
+      ),
+      'update_mode' => array(
+        'default' => false,
+        'type' => WS_TYPE_BOOL,
+        'info' => 'true if the update mode is active',
+      ),
+      'pwg_token' => array(),
+    ),
+    "Add an image.\n<br>Use the <b>\$_FILES[image]</b> field for uploading file.\n<br>Set the form encoding to \"form-data\".",
+    null,
     array('admin_only' => true, 'post_only' => true)
   );
 }

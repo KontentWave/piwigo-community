@@ -22,13 +22,83 @@ class OriginalSumGuardTest extends TestCase
     $addSimpleMethod = community_test_get_registered_method($service, 'pwg.images.addSimple');
     $addMethod = community_test_get_registered_method($service, 'pwg.images.add');
     $chunkMethod = community_test_get_registered_method($service, 'pwg.images.addChunk');
+    $uploadMethod = community_test_get_registered_method($service, 'pwg.images.upload');
 
     $this->assertSame('community_ws_images_add_simple', $addSimpleMethod['callback']);
     $this->assertSame(array('post_only' => true), $addSimpleMethod['options']);
     $this->assertSame('community_ws_images_add', $addMethod['callback']);
     $this->assertSame('community_ws_images_add_chunk', $chunkMethod['callback']);
+    $this->assertSame('community_ws_images_upload', $uploadMethod['callback']);
+    $this->assertSame(array('post_only' => true), $uploadMethod['options']);
     $this->assertSame(array('admin_only' => true), $addMethod['options']);
     $this->assertSame(array('admin_only' => true, 'post_only' => true), $chunkMethod['options']);
+  }
+
+  public function testNonAdminUploadLifecycleAuthorizedSingleCategoryDelegatesOnceWithoutStatusElevation()
+  {
+    global $user;
+
+    $service = community_test_build_service(
+      'pwg.images.upload',
+      array(
+        'category' => '1',
+        'name' => 'upload.jpg',
+        'pwg_token' => 'test-token',
+      )
+    );
+
+    $delegateCalls = 0;
+    $statusBefore = $user['status'];
+    $GLOBALS['community_ws_images_upload_delegate'] = function ($forwardedParams, $forwardedService) use (&$delegateCalls, &$user, $service, $statusBefore) {
+      $delegateCalls++;
+      TestCase::assertSame('normal', $user['status']);
+      TestCase::assertSame($statusBefore, $user['status']);
+      TestCase::assertSame(array(1), $forwardedParams['category']);
+      TestCase::assertSame('upload.jpg', $forwardedParams['name']);
+      TestCase::assertSame('test-token', $forwardedParams['pwg_token']);
+      TestCase::assertSame($service, $forwardedService);
+
+      return array('image_id' => 456, 'category' => array('id' => 1));
+    };
+
+    $result = $service->invoke('pwg.images.upload', array(
+      'category' => '1',
+      'name' => 'upload.jpg',
+      'pwg_token' => 'test-token',
+    ));
+
+    $this->assertSame(array('image_id' => 456, 'category' => array('id' => 1)), $result);
+    $this->assertSame('normal', $user['status']);
+    $this->assertSame(1, $delegateCalls);
+  }
+
+  public function testNonAdminUploadLifecycleRejectsUnauthorizedCategoryWithoutDelegateCall()
+  {
+    $service = community_test_build_service(
+      'pwg.images.upload',
+      array(
+        'category' => '1',
+        'name' => 'upload.jpg',
+        'pwg_token' => 'test-token',
+      )
+    );
+
+    $delegateCalls = 0;
+    $GLOBALS['community_ws_images_upload_delegate'] = function () use (&$delegateCalls) {
+      $delegateCalls++;
+      return array('image_id' => 456, 'category' => array('id' => 1));
+    };
+
+    $result = $service->invoke('pwg.images.upload', array(
+      'category' => '2',
+      'name' => 'upload.jpg',
+      'pwg_token' => 'test-token',
+    ));
+
+    $this->assertInstanceOf(PwgError::class, $result);
+    $this->assertSame(401, $result->code());
+    $this->assertSame('Access denied', $result->message());
+    $this->assertSame(0, $delegateCalls);
   }
 
   public function testNonAdminAddSimpleLifecycleAuthorizedSingleCategoryDelegatesOnceWithoutStatusElevation()
@@ -490,11 +560,14 @@ class OriginalSumGuardTest extends TestCase
     $addSimpleMethod = community_test_get_registered_method($service, 'pwg.images.addSimple');
     $addMethod = community_test_get_registered_method($service, 'pwg.images.add');
     $chunkMethod = community_test_get_registered_method($service, 'pwg.images.addChunk');
+    $uploadMethod = community_test_get_registered_method($service, 'pwg.images.upload');
 
     $this->assertSame('ws_images_addSimple', $addSimpleMethod['callback']);
     $this->assertSame(array('admin_only' => true, 'post_only' => true), $addSimpleMethod['options']);
     $this->assertSame('ws_images_add', $addMethod['callback']);
     $this->assertSame('ws_images_add_chunk', $chunkMethod['callback']);
+    $this->assertSame('ws_images_upload', $uploadMethod['callback']);
+    $this->assertSame(array('admin_only' => true, 'post_only' => true), $uploadMethod['options']);
     $this->assertSame(array('admin_only' => true), $addMethod['options']);
     $this->assertSame(array('admin_only' => true, 'post_only' => true), $chunkMethod['options']);
   }
@@ -513,6 +586,25 @@ class OriginalSumGuardTest extends TestCase
     $method = community_test_get_registered_method($service, 'pwg.images.addSimple');
 
     $this->assertSame('ws_images_addSimple', $method['callback']);
+    $this->assertSame(array('admin_only' => true, 'post_only' => true), $method['options']);
+  }
+
+  public function testUploadLifecycleFakedByCommunityFalseKeepsExistingBehavior()
+  {
+    $_REQUEST['faked_by_community'] = 'false';
+    $service = community_test_build_service(
+      'pwg.images.upload',
+      array(
+        'category' => '1',
+        'name' => 'upload.jpg',
+        'pwg_token' => 'test-token',
+        'faked_by_community' => 'false',
+      )
+    );
+
+    $method = community_test_get_registered_method($service, 'pwg.images.upload');
+
+    $this->assertSame('ws_images_upload', $method['callback']);
     $this->assertSame(array('admin_only' => true, 'post_only' => true), $method['options']);
   }
 
