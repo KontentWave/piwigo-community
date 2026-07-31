@@ -15,14 +15,14 @@ Target: before the next production exposure change.
 Target: first patch release.
 
 1. Replace `community_switch_user_to_admin` with Community-owned, method-specific adapters.
-   Status 2026-07-30: partially completed for SEC-01 Slice 1 only. `pwg.images.addSimple` and `pwg.images.upload` now use Community-owned wrappers with normalized destination authorization and object-mutation checks, while the remaining elevated upload/helper methods still need method-specific adapters.
+   Status 2026-07-30: partially completed for SEC-01 Slice 1 only. `pwg.images.addSimple` and `pwg.images.upload` now use Community-owned wrappers with normalized destination authorization and object-mutation checks; `pwg.images.upload` currently rejects Community `update_mode` because the core delegate cannot safely pin the authorized replacement target, while the remaining elevated upload/helper methods still need method-specific adapters.
 2. Reject legacy upload checksums that are not exactly 32 hexadecimal characters before filesystem or SQL use, and remove raw checksum interpolation.
    Status 2026-07-30: completed in plugin-owned wrappers for `pwg.images.add` and `pwg.images.addChunk`, with escaped Community checksum lookup and escaped filename uniqueness precheck for the legacy `original_filename` SQL path.
 3. Validate all category IDs against effective grants before any upload/chunk write.
    Status 2026-07-30: partially completed for SEC-01 Slice 1 only. `pwg.images.addSimple` and `pwg.images.upload` now reject missing, malformed, non-positive, mixed, and unauthorized destination categories atomically before delegation.
 4. Bind chunk state to actor, destination, checksum, size, and expiry.
 5. Add ownership/category checks to upload completion, image replacement, format attachment, update mode, and other image mutation.
-   Status 2026-07-30: partially completed for SEC-01 Slice 1 only. `pwg.images.addSimple` replacement now requires ownership and, for guest/generic users, current-session provenance immediately before delegation; `pwg.images.upload` now rejects unauthorized `format_of` and update-mode target mutations before delegation.
+   Status 2026-07-30: partially completed for SEC-01 Slice 1 only. `pwg.images.addSimple` replacement now requires ownership and, for guest/generic users, current-session provenance immediately before delegation; `pwg.images.upload` now rejects unauthorized `format_of` and rejects Community `update_mode` entirely until replacement targets can be pinned before delegation.
 6. Convert all admin mutations to POST plus `pwg_token`; remove permission deletion by GET.
 7. Add archive path and resource limits or remove archive support.
 

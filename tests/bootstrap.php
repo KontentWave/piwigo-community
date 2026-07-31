@@ -3,6 +3,7 @@
 define('PHPWG_ROOT_PATH', dirname(__DIR__, 3) . '/');
 define('IN_WS', true);
 define('CATEGORIES_TABLE', 'piwigo_categories');
+define('IMAGE_CATEGORY_TABLE', 'piwigo_image_category');
 define('IMAGES_TABLE', 'piwigo_images');
 define('ACTIVITY_TABLE', 'piwigo_activity');
 
@@ -82,6 +83,17 @@ function hash_from_query($query)
 function query2array($query)
 {
   $GLOBALS['community_test']['queries'][] = $query;
+
+  if (!empty($GLOBALS['community_test']['query2array_returns']))
+  {
+    return array_shift($GLOBALS['community_test']['query2array_returns']);
+  }
+
+  if (array_key_exists('query2array_return', $GLOBALS['community_test']))
+  {
+    return $GLOBALS['community_test']['query2array_return'];
+  }
+
   return array();
 }
 
@@ -332,6 +344,7 @@ function community_test_reset_runtime()
     'fetch_row_args' => array(),
     'fetch_row_returns' => array(),
     'fetch_assoc_return' => array(),
+    'query2array_returns' => array(),
     'status_headers' => array(),
     'is_admin' => false,
     'add_uploaded_file_calls' => array(),

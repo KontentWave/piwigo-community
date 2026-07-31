@@ -229,27 +229,6 @@ function community_ws_images_add_simple($params, $service)
   return $result;
 }
 
-function community_find_update_mode_image_id($category_id, $name)
-{
-  $escaped_name = pwg_db_real_escape_string(stripslashes($name));
-  $query = '
-SELECT
-    i.id
-  FROM '.IMAGES_TABLE.' AS i
-    INNER JOIN '.IMAGE_CATEGORY_TABLE.' AS ic ON ic.image_id = i.id
-  WHERE i.file = \''.$escaped_name.'\'
-    AND ic.category_id = '.(int) $category_id.'
-;';
-  $images = query2array($query);
-
-  if (empty($images))
-  {
-    return null;
-  }
-
-  return (int) $images[0]['id'];
-}
-
 function community_ws_images_upload($params, $service)
 {
   global $community;
@@ -264,22 +243,17 @@ function community_ws_images_upload($params, $service)
 
   $params['category'] = $authorized_categories;
 
-  if (!empty($params['format_of']) and !community_user_can_mutate_uploaded_image($params['format_of']))
+  // Core update_mode re-resolves the replacement target internally using
+  // name/category, so Community cannot safely pin the object it just
+  // authorized through this delegate boundary.
+  if (!empty($params['update_mode']))
   {
     return community_access_denied_error();
   }
 
-  if (!empty($params['update_mode']))
+  if (!empty($params['format_of']) and !community_user_can_mutate_uploaded_image($params['format_of']))
   {
-    $update_image_id = community_find_update_mode_image_id(
-      $authorized_categories[0],
-      isset($params['name']) ? $params['name'] : ''
-    );
-
-    if (isset($update_image_id) and !community_user_can_mutate_uploaded_image($update_image_id))
-    {
-      return community_access_denied_error();
-    }
+    return community_access_denied_error();
   }
 
   $result = community_call_ws_images_upload($params, $service);

@@ -101,6 +101,255 @@ class OriginalSumGuardTest extends TestCase
     $this->assertSame(0, $delegateCalls);
   }
 
+  public function testNonAdminUploadLifecycleRejectsMixedCategoriesAtomically()
+  {
+    $service = community_test_build_service(
+      'pwg.images.upload',
+      array(
+        'category' => array('1', '2'),
+        'name' => 'upload.jpg',
+        'pwg_token' => 'test-token',
+      )
+    );
+
+    $delegateCalls = 0;
+    $GLOBALS['community_ws_images_upload_delegate'] = function () use (&$delegateCalls) {
+      $delegateCalls++;
+      return array('image_id' => 456, 'category' => array('id' => 1));
+    };
+
+    $result = $service->invoke('pwg.images.upload', array(
+      'category' => array('1', '2'),
+      'name' => 'upload.jpg',
+      'pwg_token' => 'test-token',
+    ));
+
+    $this->assertInstanceOf(PwgError::class, $result);
+    $this->assertSame(401, $result->code());
+    $this->assertSame('Access denied', $result->message());
+    $this->assertSame(0, $delegateCalls);
+    $this->assertSame(array(), $GLOBALS['community_test']['queries']);
+  }
+
+  public function testNonAdminUploadLifecycleAllowsFormatOfOwnersOwnImage()
+  {
+    global $user;
+
+    $service = community_test_build_service(
+      'pwg.images.upload',
+      array(
+        'category' => '1',
+        'name' => 'format.jpg',
+        'format_of' => 77,
+        'pwg_token' => 'test-token',
+      )
+    );
+
+    $delegateCalls = 0;
+    $statusBefore = $user['status'];
+    $GLOBALS['community_test']['fetch_row_return'] = array('1');
+    $GLOBALS['community_ws_images_upload_delegate'] = function ($forwardedParams, $forwardedService) use (&$delegateCalls, &$user, $service, $statusBefore) {
+      $delegateCalls++;
+      TestCase::assertSame('normal', $user['status']);
+      TestCase::assertSame($statusBefore, $user['status']);
+      TestCase::assertSame(array(1), $forwardedParams['category']);
+      TestCase::assertSame(77, $forwardedParams['format_of']);
+      TestCase::assertSame($service, $forwardedService);
+
+      return array('image_id' => 77, 'category' => array('id' => 1));
+    };
+
+    $result = $service->invoke('pwg.images.upload', array(
+      'category' => '1',
+      'name' => 'format.jpg',
+      'format_of' => 77,
+      'pwg_token' => 'test-token',
+    ));
+
+    $this->assertSame(array('image_id' => 77, 'category' => array('id' => 1)), $result);
+    $this->assertSame(1, $delegateCalls);
+    $this->assertStringContainsString('WHERE id = 77', $GLOBALS['community_test']['queries'][0]);
+    $this->assertStringContainsString('added_by` = 2', $GLOBALS['community_test']['queries'][0]);
+  }
+
+  public function testNonAdminUploadLifecycleDeniesFormatOfAnotherUsersImage()
+  {
+    $service = community_test_build_service(
+      'pwg.images.upload',
+      array(
+        'category' => '1',
+        'name' => 'format.jpg',
+        'format_of' => 77,
+        'pwg_token' => 'test-token',
+      )
+    );
+
+    $delegateCalls = 0;
+    $GLOBALS['community_test']['fetch_row_return'] = array('0');
+    $GLOBALS['community_ws_images_upload_delegate'] = function () use (&$delegateCalls) {
+      $delegateCalls++;
+      return array('image_id' => 77, 'category' => array('id' => 1));
+    };
+
+    $result = $service->invoke('pwg.images.upload', array(
+      'category' => '1',
+      'name' => 'format.jpg',
+      'format_of' => 77,
+      'pwg_token' => 'test-token',
+    ));
+
+    $this->assertInstanceOf(PwgError::class, $result);
+    $this->assertSame(401, $result->code());
+    $this->assertSame('Access denied', $result->message());
+    $this->assertSame(0, $delegateCalls);
+    $this->assertStringContainsString('added_by` = 2', $GLOBALS['community_test']['queries'][0]);
+  }
+
+  public function testGenericUserUploadLifecycleLimitsFormatOfToCurrentSession()
+  {
+    global $user;
+
+    $service = community_test_build_service(
+      'pwg.images.upload',
+      array(
+        'category' => '1',
+        'name' => 'format.jpg',
+        'format_of' => 77,
+        'pwg_token' => 'test-token',
+      )
+    );
+
+    $user['status'] = 'generic';
+    $delegateCalls = 0;
+    $GLOBALS['community_test']['fetch_row_returns'] = array(
+      array('1'),
+      array('0'),
+    );
+    $GLOBALS['community_ws_images_upload_delegate'] = function () use (&$delegateCalls) {
+      $delegateCalls++;
+      return array('image_id' => 77, 'category' => array('id' => 1));
+    };
+
+    $result = $service->invoke('pwg.images.upload', array(
+      'category' => '1',
+      'name' => 'format.jpg',
+      'format_of' => 77,
+      'pwg_token' => 'test-token',
+    ));
+
+    $this->assertInstanceOf(PwgError::class, $result);
+    $this->assertSame(401, $result->code());
+    $this->assertSame('Access denied', $result->message());
+    $this->assertSame(0, $delegateCalls);
+    $this->assertCount(2, $GLOBALS['community_test']['queries']);
+    $this->assertStringContainsString('session_idx', $GLOBALS['community_test']['queries'][1]);
+  }
+
+  public function testNonAdminUploadLifecycleRejectsUpdateModeBeforeDelegateCall()
+  {
+    $service = community_test_build_service(
+      'pwg.images.upload',
+      array(
+        'category' => '1',
+        'name' => 'upload.jpg',
+        'update_mode' => true,
+        'pwg_token' => 'test-token',
+      )
+    );
+
+    $delegateCalls = 0;
+    $GLOBALS['community_ws_images_upload_delegate'] = function () use (&$delegateCalls) {
+      $delegateCalls++;
+      return array('image_id' => 77, 'category' => array('id' => 1));
+    };
+
+    $result = $service->invoke('pwg.images.upload', array(
+      'category' => '1',
+      'name' => 'upload.jpg',
+      'update_mode' => true,
+      'pwg_token' => 'test-token',
+    ));
+
+    $this->assertInstanceOf(PwgError::class, $result);
+    $this->assertSame(401, $result->code());
+    $this->assertSame('Access denied', $result->message());
+    $this->assertSame(0, $delegateCalls);
+    $this->assertSame(array(), $GLOBALS['community_test']['queries']);
+  }
+
+  public function testGenericUserUploadLifecycleRejectsUpdateModeBeforeSessionMutationCheck()
+  {
+    global $user;
+
+    $service = community_test_build_service(
+      'pwg.images.upload',
+      array(
+        'category' => '1',
+        'name' => 'upload.jpg',
+        'update_mode' => true,
+        'pwg_token' => 'test-token',
+      )
+    );
+
+    $user['status'] = 'generic';
+    $delegateCalls = 0;
+    $GLOBALS['community_ws_images_upload_delegate'] = function () use (&$delegateCalls) {
+      $delegateCalls++;
+      return array('image_id' => 77, 'category' => array('id' => 1));
+    };
+
+    $result = $service->invoke('pwg.images.upload', array(
+      'category' => '1',
+      'name' => 'upload.jpg',
+      'update_mode' => true,
+      'pwg_token' => 'test-token',
+    ));
+
+    $this->assertInstanceOf(PwgError::class, $result);
+    $this->assertSame(401, $result->code());
+    $this->assertSame('Access denied', $result->message());
+    $this->assertSame(0, $delegateCalls);
+    $this->assertSame(array(), $GLOBALS['community_test']['queries']);
+  }
+
+  public function testNonAdminUploadLifecycleRejectsUpdateModeTargetDriftBeforeCoreMutation()
+  {
+    $service = community_test_build_service(
+      'pwg.images.upload',
+      array(
+        'category' => '1',
+        'name' => 'upload.jpg',
+        'update_mode' => true,
+        'pwg_token' => 'test-token',
+      )
+    );
+
+    $delegateCalls = 0;
+    $GLOBALS['community_ws_images_upload_delegate'] = function ($forwardedParams) use (&$delegateCalls) {
+      $delegateCalls++;
+      $images = query2array('core-update-mode-reresolution');
+      if (!empty($images))
+      {
+        return array('image_id' => (int) $images[0]['id'], 'category' => array('id' => $forwardedParams['category'][0]));
+      }
+
+      return array('image_id' => 0, 'category' => array('id' => $forwardedParams['category'][0]));
+    };
+
+    $result = $service->invoke('pwg.images.upload', array(
+      'category' => '1',
+      'name' => 'upload.jpg',
+      'update_mode' => true,
+      'pwg_token' => 'test-token',
+    ));
+
+    $this->assertInstanceOf(PwgError::class, $result);
+    $this->assertSame(401, $result->code());
+    $this->assertSame('Access denied', $result->message());
+    $this->assertSame(0, $delegateCalls);
+    $this->assertSame(array(), $GLOBALS['community_test']['queries']);
+  }
+
   public function testNonAdminAddSimpleLifecycleAuthorizedSingleCategoryDelegatesOnceWithoutStatusElevation()
   {
     global $user;
