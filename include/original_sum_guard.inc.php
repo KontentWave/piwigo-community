@@ -35,6 +35,290 @@ function community_call_captured_ws_method($global_name, $params, $service)
   return call_user_func($method['callback'], $params, $service);
 }
 
+function community_apply_two_factor_webservice_guard()
+{
+  community_require_two_factor_for_album_management();
+}
+
+function community_helper_access_denied_error()
+{
+  return new PwgError(401, 'Access denied');
+}
+
+function community_has_effective_upload_grant()
+{
+  global $user;
+
+  $permissions = community_get_user_permissions($user['id']);
+
+  return !empty($permissions['upload_categories']);
+}
+
+function community_authorize_helper_image_targets($image_ids)
+{
+  global $user;
+
+  $upload_categories = community_get_mutation_upload_categories();
+  if (empty($upload_categories))
+  {
+    return false;
+  }
+
+  $rows = query2array('
+SELECT
+    images.id,
+    images.added_by,
+    image_category.category_id,
+    lounge.category_id AS lounge_category_id
+  FROM '.IMAGES_TABLE.' AS images
+    LEFT JOIN '.IMAGE_CATEGORY_TABLE.' AS image_category ON image_category.image_id = images.id
+    LEFT JOIN '.LOUNGE_TABLE.' AS lounge ON lounge.image_id = images.id
+  WHERE images.id IN ('.implode(',', $image_ids).')
+;');
+
+  $authorized_images = array();
+  foreach ($rows as $row)
+  {
+    $image_id = isset($row['id']) ? (int) $row['id'] : 0;
+    if (!in_array($image_id, $image_ids, true) || (int) $row['added_by'] !== (int) $user['id'])
+    {
+      return false;
+    }
+
+    if (isset($row['category_id']))
+    {
+      if (!in_array((int) $row['category_id'], $upload_categories, true))
+      {
+        return false;
+      }
+      $authorized_images[$image_id] = true;
+    }
+    elseif (isset($row['lounge_category_id'])
+      && in_array((int) $row['lounge_category_id'], $upload_categories, true))
+    {
+      $authorized_images[$image_id] = true;
+    }
+  }
+
+  if (count($authorized_images) !== count($image_ids))
+  {
+    return false;
+  }
+
+  if (in_array($user['status'], array('guest', 'generic'), true))
+  {
+    $query = '
+SELECT DISTINCT object_id
+  FROM '.ACTIVITY_TABLE.'
+  WHERE object = \'photo\'
+    AND action = \'add\'
+    AND object_id IN ('.implode(',', $image_ids).')
+    AND session_idx = \''.pwg_db_real_escape_string(session_id()).'\'
+;';
+    $session_image_ids = array_map('intval', query2array($query, null, 'object_id'));
+    sort($session_image_ids);
+    $expected_image_ids = $image_ids;
+    sort($expected_image_ids);
+    if ($session_image_ids !== $expected_image_ids)
+    {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+function community_normalize_helper_list($value, $validate_md5)
+{
+  if (!is_string($value))
+  {
+    return null;
+  }
+
+  $values = preg_split('/[\s,;\|]/', $value, -1, PREG_SPLIT_NO_EMPTY);
+  if (empty($values) || count($values) !== count(array_unique($values)))
+  {
+    return null;
+  }
+
+  if ($validate_md5)
+  {
+    foreach ($values as $candidate)
+    {
+      if (!community_is_valid_original_sum($candidate))
+      {
+        return null;
+      }
+    }
+  }
+
+  return $values;
+}
+
+function community_ws_images_exist($params, $service)
+{
+  global $conf;
+
+  if (!community_has_effective_upload_grant())
+  {
+    return community_helper_access_denied_error();
+  }
+
+  $mode = isset($conf['uniqueness_mode']) ? $conf['uniqueness_mode'] : null;
+  $selected_key = 'md5sum' === $mode ? 'md5sum_list' : ('filename' === $mode ? 'filename_list' : null);
+  $other_key = 'md5sum' === $mode ? 'filename_list' : 'md5sum_list';
+  if (!isset($selected_key)
+    || !array_key_exists($selected_key, $params)
+    || (array_key_exists($other_key, $params) && null !== $params[$other_key]))
+  {
+    return community_helper_access_denied_error();
+  }
+
+  $candidates = community_normalize_helper_list($params[$selected_key], 'md5sum' === $mode);
+  if (empty($candidates) || !community_has_effective_upload_grant())
+  {
+    return community_helper_access_denied_error();
+  }
+
+  $column = 'md5sum' === $mode ? 'md5sum' : 'file';
+  $escaped_candidates = array();
+  foreach ($candidates as $candidate)
+  {
+    $escaped_candidates[] = pwg_db_real_escape_string($candidate);
+  }
+
+  $rows = query2array(
+    'SELECT id, '.$column.' FROM '.IMAGES_TABLE." WHERE ".$column." IN ('".implode("','", $escaped_candidates)."');"
+  );
+  $matched_ids = array();
+  $id_by_candidate = array();
+  foreach ($rows as $row)
+  {
+    if (!isset($row['id'], $row[$column]) || !in_array($row[$column], $candidates, true))
+    {
+      return community_helper_access_denied_error();
+    }
+
+    $image_id = community_normalize_mutation_image_id($row['id']);
+    if (!isset($image_id) || isset($id_by_candidate[$row[$column]]))
+    {
+      return community_helper_access_denied_error();
+    }
+
+    $id_by_candidate[$row[$column]] = $image_id;
+    $matched_ids[] = $image_id;
+  }
+
+  if (!empty($matched_ids) && !community_authorize_helper_image_targets(array_values(array_unique($matched_ids))))
+  {
+    return community_helper_access_denied_error();
+  }
+
+  $result = array();
+  foreach ($candidates as $candidate)
+  {
+    $result[$candidate] = isset($id_by_candidate[$candidate]) ? $id_by_candidate[$candidate] : null;
+  }
+
+  return $result;
+}
+
+function community_ws_images_check_upload($params, $service)
+{
+  if (!community_has_effective_upload_grant())
+  {
+    return community_helper_access_denied_error();
+  }
+
+  return community_call_captured_ws_method('community_ws_images_check_upload_delegate_method', $params, $service);
+}
+
+function community_hash_file($path)
+{
+  if (isset($GLOBALS['community_test']['file_hash_callback']))
+  {
+    return call_user_func($GLOBALS['community_test']['file_hash_callback'], $path);
+  }
+
+  return md5_file($path);
+}
+
+function community_ws_images_check_files($params, $service)
+{
+  $image_id = isset($params['image_id']) ? community_normalize_mutation_image_id($params['image_id']) : null;
+  if (!isset($image_id))
+  {
+    return community_helper_access_denied_error();
+  }
+
+  foreach (array('file_sum', 'thumbnail_sum', 'high_sum') as $sum_key)
+  {
+    if (isset($params[$sum_key]) && !community_is_valid_original_sum($params[$sum_key]))
+    {
+      return community_helper_access_denied_error();
+    }
+  }
+
+  if (!community_authorize_helper_image_targets(array($image_id)))
+  {
+    return community_helper_access_denied_error();
+  }
+
+  $rows = query2array('SELECT path FROM '.IMAGES_TABLE.' WHERE id = '.(int) $image_id.';');
+  if (1 !== count($rows) || !isset($rows[0]['path']) || !is_string($rows[0]['path']))
+  {
+    return community_helper_access_denied_error();
+  }
+
+  $result = array();
+  if (isset($params['thumbnail_sum']))
+  {
+    $result['thumbnail'] = 'equals';
+  }
+
+  if (isset($params['high_sum']))
+  {
+    $result['file'] = 'equals';
+    $compare_type = 'high';
+  }
+  elseif (isset($params['file_sum']))
+  {
+    $compare_type = 'file';
+  }
+
+  if (isset($compare_type))
+  {
+    $actual_sum = community_hash_file($rows[0]['path']);
+    if (false === $actual_sum)
+    {
+      return community_helper_access_denied_error();
+    }
+
+    $result[$compare_type] = $actual_sum === $params[$compare_type.'_sum'] ? 'equals' : 'differs';
+  }
+
+  return $result;
+}
+
+function community_ws_session_get_status($params, $service)
+{
+  global $conf;
+
+  $result = community_call_captured_ws_method('community_ws_session_get_status_delegate_method', $params, $service);
+  if ($result instanceof PwgError || !community_has_effective_upload_grant())
+  {
+    return $result;
+  }
+
+  $result['upload_file_types'] = implode(
+    ',',
+    array_unique(array_map('strtolower', $conf['upload_form_all_types'] ? $conf['file_ext'] : $conf['picture_ext']))
+  );
+  $result['upload_form_chunk_size'] = $conf['upload_form_chunk_size'];
+
+  return $result;
+}
+
 function community_content_creation_error()
 {
   return new PwgError(403, 'Forbidden');
@@ -2584,6 +2868,7 @@ function community_ws_images_add($params, $service)
   {
     $community['method'] = 'pwg.images.add';
     $community['category'] = $authorized_categories['ids'][0];
+    $community['md5sum'] = $params['original_sum'];
   }
 
   community_cleanup_legacy_add_artifacts($paths);

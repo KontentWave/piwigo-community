@@ -3,6 +3,7 @@
 ## SEC-01: Unscoped webservice administrator elevation
 
 **Severity: Critical**
+**Status 2026-07-31: Remediated**
 **Evidence:** `main.inc.php:309-468`, function `community_switch_user_to_admin`; Piwigo `ws.php`, registrations for `pwg.images.*`, `pwg.tags.add`, and `pwg.categories.add`.
 
 Any non-admin user with at least one upload or create permission can have `$user['status']` changed to `admin` for a broad allowlist. For `pwg.images.addSimple`, `pwg.images.upload`, `pwg.images.uploadAsync`, and `pwg.images.add`, the requested category is captured but never checked against `upload_categories` before elevation. Core therefore sees an administrator and accepts destinations outside the Community grant. Moderation is applied later in `community_sendResponse`, after the image has been created.
@@ -42,7 +43,11 @@ The same elevation grants `pwg.tags.add`, chunk/check methods, session status, a
 
 **Acceptance evidence 2026-07-31 (`pwg.categories.add` + `pwg.tags.add`):** Lifecycle coverage proves child and root creation policy, upload-only/category-only separation, effective upload requirements for tags, strict malformed parent/name/option rejection, missing/invalid/stale token denial with zero modeled side effects, HTML removal, immediate revocation checks, one delegate and one normal tag activity, required cache revision and inherited-child permissions, browser token/error handling, immutable status/request globals, administrator passthrough, and `faked_by_community=false`. The complete lifecycle/upload-guard file and full configured PHPUnit suite pass with 182 tests and 1002 assertions; all four changed PHP files pass `php -l`.
 
-**Residual risk after the completed slices:** SEC-01 remains open. Ambient elevation still applies to `pwg.images.exist`, `pwg.images.checkUpload`, `pwg.images.checkFiles`, and `pwg.session.getStatus`; those remaining helper methods require a separate slice. File-backed upload and completion state is not transactional database state. Completion receipts suppress duplicate effects under retry and overlap, but they are not a notification outbox: a process failure around mail delivery can still lose or repeat a notification. Quota reservation, archive hardening, and SEC-02 through SEC-04 remain open.
+**Final update 2026-07-31 (`pwg.images.exist`, `pwg.images.checkUpload`, `pwg.images.checkFiles`, and `pwg.session.getStatus`):** Community now captures and replaces the final four helper callbacks only for Community-enabled non-admin requests, with genuine administrators and `faked_by_community=false` retaining untouched core behavior. Image helpers require a current effective upload grant. `pwg.images.exist` parses only the configured uniqueness input, validates every MD5, escapes every candidate independently, performs a Community-owned lookup, and rejects foreign or mixed matches atomically. `pwg.images.checkFiles` validates one canonical image ID and every checksum before authorizing owner, category or exact lounge provenance, and guest/generic session provenance before any path lookup or hash. `pwg.images.checkUpload` delegates exactly once after its final grant check. `pwg.session.getStatus` preserves the real core identity and Remote Sync response while appending only Piwigo's uploader file types and chunk size for eligible uploaders. The two-factor webservice boundary, upload moderation context, and legacy checksum response lookup remain active without status or request-global mutation. `community_switch_user_to_admin` and its event registration are removed.
+
+**Final acceptance evidence 2026-07-31:** Lifecycle coverage proves immutable non-admin status through registration, callbacks, later handlers, and response hooks; capability separation; final permission, ownership, category, lounge, and guest-session revocation; safe MD5 and filename existence behavior; atomic foreign-match denial; checksum compatibility and authorization-before-path/hash behavior; exact check-upload delegation; normal and Remote Sync session responses; two-factor guard invocation; administrator and explicit-bypass passthrough; and migrated upload moderation/checksum context. The complete lifecycle/upload-guard file and full configured PHPUnit suite pass with 196 tests and 1052 assertions. All four changed PHP files pass `php -l`. No plugin static-analysis or code-style command is configured.
+
+**Residual risk:** No documented Piwigo limit exists for `pwg.images.exist` candidate lists, so resource-amplification limits remain operational hardening work. File-backed upload and completion state is not transactional database state, and completion receipts are not a notification outbox. Quota reservation, archive hardening, SEC-02 through SEC-04, and REL-01/02 remain open.
 
 ## SEC-02: Missing CSRF protection on administrator mutations
 
@@ -109,7 +114,7 @@ Any Community-enabled caller elevated for `pwg.images.add` can supply an arbitra
 
 **Acceptance evidence 2026-07-30:** PHPUnit lifecycle coverage proves the real Community `ws_add_methods` sequence activates the plugin wrappers for non-admin requests, preserves untouched core callbacks for genuine administrators, rejects adversarial checksums before delegate invocation or plugin SQL, delegates mixed-case valid checksums exactly once for both `pwg.images.add` and `pwg.images.addChunk`, and preserves duplicate/non-duplicate filename uniqueness behavior while preventing quote/metacharacter filenames from altering SQL structure.
 
-**Residual risk:** This remediation depends on Community's wrappers remaining the final registrations for `pwg.images.add` and `pwg.images.addChunk` during `ws_add_methods`. The broader authorization problem described in SEC-01 remains open, so checksum and filename interception are fixed without changing the underlying ambient-admin design.
+**Residual risk:** This remediation depends on Community's wrappers remaining the final registrations for `pwg.images.add` and `pwg.images.addChunk` during `ws_add_methods`. SEC-01's ambient-admin design is now removed, but future registration-order changes must preserve the Community wrappers as the active non-admin boundaries.
 
 ## SEC-07: Output and client error handling need hardening
 
@@ -123,7 +128,7 @@ Piwigo-generated image fields are expected to be safe, but DOM construction with
 ## Compensating controls
 
 - Disable ZIP uploads and cap request size, request rate, concurrent uploads, and buffer filesystem usage.
-- Grant only moderated permissions to trusted authenticated accounts; avoid `any_visitor` until SEC-01 is fixed.
+- Grant only moderated permissions to trusted authenticated accounts; guest/generic upload access still requires careful session and storage monitoring.
 - Alert on uploads to albums outside expected contributor scopes and on sudden tag creation.
 - Use a dedicated upload volume with no script execution and restrictive filesystem permissions.
 - Keep Piwigo, PHP, database, and archive libraries patched.

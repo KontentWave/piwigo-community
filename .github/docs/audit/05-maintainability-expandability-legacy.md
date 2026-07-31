@@ -21,6 +21,8 @@ Changing `$user['status']`, unsetting/rewriting `$_POST`, and changing `$conf['a
 
 **Recommendation:** Introduce immutable request DTOs and an explicit `CommunityAuthorizationPolicy`. Core integration adapters should pass a scoped capability object to an upload service; global user/config state must remain unchanged.
 
+**Update 2026-07-31:** SEC-01 removed the ambient administrator bridge and moved the affected webservice methods to scoped Community adapters that authorize normalized parameters without changing user status, request globals, or configuration. Other global-state and request-mutation concerns in the plugin remain maintainability work.
+
 ## MAINT-02: Controllers mix too many responsibilities
 
 **Severity: High**
@@ -38,7 +40,7 @@ Business rules cannot be tested without bootstrapping Piwigo globals and a datab
 - `NotificationOutbox`.
 - Thin Piwigo page/webservice/hook adapters.
 
-Start with SEC-01 so the first abstraction removes real security complexity.
+Build on the scoped adapters introduced by the completed SEC-01 remediation when extracting the remaining services.
 
 ## MAINT-03: No automated test suite or static-analysis configuration
 
@@ -71,7 +73,7 @@ Piwigo events provide useful integration points, but payload shapes, mutation ex
 
 | Legacy element                         | Evidence                                                                 | Action                                                             |
 | -------------------------------------- | ------------------------------------------------------------------------ | ------------------------------------------------------------------ | ------------------------- | ---------------------------------------------- |
-| Ambient admin compatibility bridge     | `community_switch_user_to_admin`                                         | Replace immediately.                                               |
+| Ambient admin compatibility bridge     | Removed 2026-07-31                                                       | Keep removed; preserve scoped Community adapters.                  |
 | MyISAM and `utf8` schema               | `maintain.class.php`                                                     | Migrate to InnoDB and current Piwigo charset/collation.            |
 | Old-version branches                   | Piwigo `<2.10` branch in `main.inc.php`; `safe_version_compare` fallback | Define minimum supported Piwigo/PHP, then remove dead branches.    |
 | Copied core UI logic                   | header in `edit_photos.js`; old progressbar/manageAjax patterns          | Rebase on current Piwigo APIs or provide a small owned component.  |

@@ -10,6 +10,223 @@ class OriginalSumGuardTest extends TestCase
     community_test_reset_runtime();
   }
 
+  public function testHelperLifecycleRegistersScopedWrappersWithoutStatusElevation()
+  {
+    global $user;
+
+    $service = community_test_build_service('pwg.images.checkUpload');
+
+    $this->assertSame('community_ws_images_exist', community_test_get_registered_method($service, 'pwg.images.exist')['callback']);
+    $this->assertSame('community_ws_images_check_files', community_test_get_registered_method($service, 'pwg.images.checkFiles')['callback']);
+    $this->assertSame('community_ws_images_check_upload', community_test_get_registered_method($service, 'pwg.images.checkUpload')['callback']);
+    $this->assertSame('community_ws_session_get_status', community_test_get_registered_method($service, 'pwg.session.getStatus')['callback']);
+    $this->assertSame('normal', $user['status']);
+    $this->assertSame(array('normal'), $GLOBALS['community_test']['later_handler_statuses']);
+    $this->assertSame(array(2), $GLOBALS['community_test']['two_factor_eligible_checks']);
+
+    $result = $service->invoke('pwg.images.checkUpload', array());
+
+    $this->assertSame(array('ready_for_upload' => true, 'message' => ''), $result);
+    $this->assertCount(1, $GLOBALS['community_test']['helper_delegate_calls']['pwg.images.checkUpload']);
+    $this->assertSame('normal', $user['status']);
+  }
+
+  public function testHelperLifecycleSeparatesUploadAndCategoryCreationCapabilities()
+  {
+    $service = community_test_build_service('pwg.images.checkUpload');
+    $_SESSION['community_user_permissions']['upload_categories'] = array();
+    $_SESSION['community_user_permissions']['create_categories'] = array(1);
+
+    $checkUpload = $service->invoke('pwg.images.checkUpload', array());
+    $status = $service->invoke('pwg.session.getStatus', array());
+
+    $this->assertInstanceOf(PwgError::class, $checkUpload);
+    $this->assertCount(0, $GLOBALS['community_test']['helper_delegate_calls']['pwg.images.checkUpload']);
+    $this->assertSame('normal', $status['status']);
+    $this->assertArrayNotHasKey('upload_file_types', $status);
+    $this->assertArrayNotHasKey('upload_form_chunk_size', $status);
+  }
+
+  public function testSessionStatusPreservesRealIdentityAndAddsOnlyUploaderConfiguration()
+  {
+    $service = community_test_build_service('pwg.session.getStatus');
+
+    $result = $service->invoke('pwg.session.getStatus', array());
+
+    $this->assertSame('normal', $result['status']);
+    $this->assertSame('contributor', $result['username']);
+    $this->assertSame('jpg,jpeg,png', $result['upload_file_types']);
+    $this->assertSame(512, $result['upload_form_chunk_size']);
+    $this->assertSame(array('square', 'medium'), $result['available_sizes']);
+    $this->assertCount(1, $GLOBALS['community_test']['helper_delegate_calls']['pwg.session.getStatus']);
+  }
+
+  public function testSessionStatusPreservesRemoteSyncCompatibility()
+  {
+    $_SERVER['HTTP_USER_AGENT'] = 'PiwigoRemoteSync/2.0';
+    $service = community_test_build_service('pwg.session.getStatus');
+    $_SERVER['HTTP_USER_AGENT'] = 'PiwigoRemoteSync/2.0';
+
+    $result = $service->invoke('pwg.session.getStatus', array());
+
+    $this->assertSame('normal', $result['status']);
+    $this->assertArrayNotHasKey('save_visits', $result);
+    $this->assertArrayNotHasKey('connected_with', $result);
+    $this->assertSame('jpg,jpeg,png', $result['upload_file_types']);
+  }
+
+  public function testHelperGrantRevocationIsHonoredImmediatelyBeforeDisclosure()
+  {
+    $service = community_test_build_service('pwg.images.checkUpload');
+    $_SESSION['community_user_permissions']['upload_categories'] = array();
+
+    $result = $service->invoke('pwg.images.checkUpload', array());
+
+    $this->assertInstanceOf(PwgError::class, $result);
+    $this->assertCount(0, $GLOBALS['community_test']['helper_delegate_calls']['pwg.images.checkUpload']);
+  }
+
+  public function testImagesExistSafelyReturnsOnlyEligibleOwnedMatches()
+  {
+    $service = community_test_build_service('pwg.images.exist');
+    $GLOBALS['community_test']['query2array_returns'] = array(
+      array(array('id' => 12, 'md5sum' => md5('owned'))),
+      array(array('id' => 12, 'added_by' => 2, 'category_id' => 1)),
+    );
+
+    $result = $service->invoke('pwg.images.exist', array('md5sum_list' => md5('owned').' '.md5('new')));
+
+    $this->assertSame(array(md5('owned') => 12, md5('new') => null), $result);
+    $this->assertCount(0, $GLOBALS['community_test']['helper_delegate_calls']['pwg.images.exist']);
+    $this->assertSame(array(md5('owned'), md5('new')), $GLOBALS['community_test']['escaped_values']);
+  }
+
+  public function testImagesExistRejectsMalformedAndMixedForeignMatchesAtomically()
+  {
+    $service = community_test_build_service('pwg.images.exist');
+
+    $malformed = $service->invoke('pwg.images.exist', array('md5sum_list' => array(md5('owned'))));
+    $this->assertInstanceOf(PwgError::class, $malformed);
+    $this->assertCount(0, $GLOBALS['community_test']['queries']);
+
+    $GLOBALS['community_test']['query2array_returns'] = array(
+      array(
+        array('id' => 12, 'md5sum' => md5('owned')),
+        array('id' => 13, 'md5sum' => md5('foreign')),
+      ),
+      array(
+        array('id' => 12, 'added_by' => 2, 'category_id' => 1),
+        array('id' => 13, 'added_by' => 9, 'category_id' => 1),
+      ),
+    );
+
+    $mixed = $service->invoke('pwg.images.exist', array('md5sum_list' => md5('owned').','.md5('foreign')));
+    $this->assertInstanceOf(PwgError::class, $mixed);
+  }
+
+  public function testImagesExistFilenameModeEscapesEveryCandidate()
+  {
+    global $conf;
+
+    $service = community_test_build_service('pwg.images.exist');
+    $conf['uniqueness_mode'] = 'filename';
+    $GLOBALS['community_test']['query2array_returns'] = array(array());
+    $filenames = "quote'jpg|back\\slash.jpg;plain.jpg";
+
+    $result = $service->invoke('pwg.images.exist', array('filename_list' => $filenames));
+
+    $this->assertSame(array("quote'jpg" => null, 'back\\slash.jpg' => null, 'plain.jpg' => null), $result);
+    $this->assertSame(array("quote'jpg", 'back\\slash.jpg', 'plain.jpg'), $GLOBALS['community_test']['escaped_values']);
+  }
+
+  public function testImagesExistRejectsUnauthorizedAlbumAndGenericSessionBeforeReturningIds()
+  {
+    global $user;
+
+    $service = community_test_build_service('pwg.images.exist');
+    $GLOBALS['community_test']['query2array_returns'] = array(
+      array(array('id' => 12, 'md5sum' => md5('owned'))),
+      array(array('id' => 12, 'added_by' => 2, 'category_id' => 9)),
+    );
+    $wrongAlbum = $service->invoke('pwg.images.exist', array('md5sum_list' => md5('owned')));
+    $this->assertInstanceOf(PwgError::class, $wrongAlbum);
+
+    $user['status'] = 'generic';
+    $GLOBALS['community_test']['query2array_returns'] = array(
+      array(array('id' => 12, 'md5sum' => md5('owned'))),
+      array(array('id' => 12, 'added_by' => 2, 'category_id' => 1)),
+      array(),
+    );
+    $wrongSession = $service->invoke('pwg.images.exist', array('md5sum_list' => md5('owned')));
+    $this->assertInstanceOf(PwgError::class, $wrongSession);
+  }
+
+  public function testCheckFilesAuthorizesBeforeHashingAndPreservesCompatibility()
+  {
+    $service = community_test_build_service('pwg.images.checkFiles');
+    $path = tempnam(sys_get_temp_dir(), 'community-check-files-');
+    file_put_contents($path, 'owned-file');
+    $GLOBALS['community_test']['temporary_files'][] = $path;
+    $GLOBALS['community_test']['query2array_returns'] = array(
+      array(array('id' => 12, 'added_by' => 2, 'category_id' => 1)),
+      array(array('path' => $path)),
+    );
+
+    $result = $service->invoke('pwg.images.checkFiles', array(
+      'image_id' => '12',
+      'file_sum' => md5('owned-file'),
+      'thumbnail_sum' => md5('legacy-thumb'),
+    ));
+
+    $this->assertSame(array('thumbnail' => 'equals', 'file' => 'equals'), $result);
+    $this->assertCount(0, $GLOBALS['community_test']['helper_delegate_calls']['pwg.images.checkFiles']);
+  }
+
+  public function testCheckFilesRejectsMalformedChecksumAndForeignObjectBeforePathLookup()
+  {
+    $service = community_test_build_service('pwg.images.checkFiles');
+
+    $malformed = $service->invoke('pwg.images.checkFiles', array('image_id' => '12', 'file_sum' => '../bad'));
+    $this->assertInstanceOf(PwgError::class, $malformed);
+    $this->assertCount(0, $GLOBALS['community_test']['queries']);
+
+    $GLOBALS['community_test']['query2array_returns'] = array(array(array('id' => 12, 'added_by' => 9, 'category_id' => 1)));
+    $foreign = $service->invoke('pwg.images.checkFiles', array('image_id' => '12', 'file_sum' => md5('file')));
+    $this->assertInstanceOf(PwgError::class, $foreign);
+    $this->assertCount(1, $GLOBALS['community_test']['queries']);
+  }
+
+  public function testCheckFilesRejectsCategorylessImageWithoutAuthorizedLoungeProvenance()
+  {
+    $service = community_test_build_service('pwg.images.checkFiles');
+    $GLOBALS['community_test']['query2array_returns'] = array(
+      array(array('id' => 12, 'added_by' => 2, 'category_id' => null, 'lounge_category_id' => null)),
+    );
+
+    $result = $service->invoke('pwg.images.checkFiles', array('image_id' => '12', 'file_sum' => md5('file')));
+
+    $this->assertInstanceOf(PwgError::class, $result);
+    $this->assertCount(1, $GLOBALS['community_test']['queries']);
+  }
+
+  public function testHelperAdministratorAndExplicitBypassKeepCoreCallbacks()
+  {
+    $admin = community_test_build_service('pwg.images.exist', array(), true);
+    $this->assertSame('community_test_ws_images_exist', community_test_get_registered_method($admin, 'pwg.images.exist')['callback']);
+    $this->assertSame('community_test_ws_session_getStatus', community_test_get_registered_method($admin, 'pwg.session.getStatus')['callback']);
+
+    $bypass = community_test_build_service('pwg.images.checkFiles', array('faked_by_community' => 'false'));
+    $this->assertSame('community_test_ws_images_checkFiles', community_test_get_registered_method($bypass, 'pwg.images.checkFiles')['callback']);
+  }
+
+  public function testAmbientElevationImplementationIsRemoved()
+  {
+    $main = file_get_contents(dirname(__DIR__).'/main.inc.php');
+
+    $this->assertStringNotContainsString('community_switch_user_to_admin', $main);
+    $this->assertStringNotContainsString("\$user['status'] = 'admin'", $main);
+  }
+
   public function testContentCreationLifecycleRegistersPostOnlyCommunityWrappers()
   {
     $service = community_test_build_service('pwg.categories.add', array('name' => 'Child', 'parent' => 1));

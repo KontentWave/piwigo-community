@@ -297,61 +297,6 @@ SELECT
 }
 
 
-add_event_handler('ws_add_methods', 'community_switch_user_to_admin', EVENT_HANDLER_PRIORITY_NEUTRAL+5);
-function community_switch_user_to_admin($arr)
-{
-  global $user, $community;
-
-  $service = &$arr[0];
-
-  if (is_admin())
-  {
-    return;
-  }
-  
-  $community = array('method' => $_REQUEST['method']);
-
-  if ('pwg.images.add' == $community['method'])
-  {
-    $community['category'] = $_REQUEST['categories'];
-    community_capture_original_sum_from_request($community, $_REQUEST);
-  }
-
-  // $print_params = $params;
-  // unset($print_params['data']);
-  // file_put_contents('/tmp/community.log', '['.$methodName.'] '.json_encode($print_params)."\n" ,FILE_APPEND);
-
-  // conditional : depending on community permissions, display the "Add
-  // photos" link in the gallery menu
-  $user_permissions = community_get_user_permissions($user['id']);
-
-  if (
-    count($user_permissions['upload_categories']) == 0
-    and count($user_permissions['create_categories']) == 0
-    and !$user_permissions['create_whole_gallery']
-  )
-  {
-    return;
-  }
-
-  community_require_two_factor_for_album_management();
-
-  // if level of trust is low, then we have to set level to 16
-
-  $methods = array();
-  $methods[] = 'pwg.images.exist';
-  $methods[] = 'pwg.images.checkUpload';
-  $methods[] = 'pwg.images.checkFiles';
-  $methods[] = 'pwg.session.getStatus';
-
-  if (in_array($community['method'], $methods))
-  {
-    $user['status'] = 'admin';
-  }
-
-  return;
-}
-
 add_event_handler('ws_add_methods', 'community_add_methods', EVENT_HANDLER_PRIORITY_NEUTRAL+5);
 function community_add_methods($arr)
 {
@@ -394,11 +339,11 @@ function community_add_methods($arr)
 add_event_handler('ws_add_methods', 'community_ws_replace_methods', EVENT_HANDLER_PRIORITY_NEUTRAL+5);
 function community_ws_replace_methods($arr)
 {
-  global $community, $conf, $user;
+  global $conf, $user;
   
   $service = &$arr[0];
 
-  if (is_admin() and empty($community['method']))
+  if (is_admin())
   {
     return;
   }
@@ -415,8 +360,54 @@ function community_ws_replace_methods($arr)
     return;
   }
 
+  community_apply_two_factor_webservice_guard();
+
+  community_capture_ws_method_delegate($service, 'pwg.images.exist', 'community_ws_images_exist_delegate_method');
+  community_capture_ws_method_delegate($service, 'pwg.images.checkFiles', 'community_ws_images_check_files_delegate_method');
+  community_capture_ws_method_delegate($service, 'pwg.images.checkUpload', 'community_ws_images_check_upload_delegate_method');
+  community_capture_ws_method_delegate($service, 'pwg.session.getStatus', 'community_ws_session_get_status_delegate_method');
+
   community_capture_ws_method_delegate($service, 'pwg.categories.add', 'community_ws_categories_add_delegate_method');
   community_capture_ws_method_delegate($service, 'pwg.tags.add', 'community_ws_tags_add_delegate_method');
+
+  $service->addMethod(
+    'pwg.images.exist',
+    'community_ws_images_exist',
+    array(
+      'md5sum_list' => array('default'=>null),
+      'filename_list' => array('default'=>null),
+      ),
+    'Checks existence of images.<br>Give <b>md5sum_list</b> if $conf[uniqueness_mode]==md5sum. Give <b>filename_list</b> if $conf[uniqueness_mode]==filename.',
+    null
+    );
+
+  $service->addMethod(
+    'pwg.images.checkFiles',
+    'community_ws_images_check_files',
+    array(
+      'image_id' => array('type'=>WS_TYPE_ID),
+      'file_sum' => array('default'=>null),
+      'thumbnail_sum' => array('default'=>null),
+      'high_sum' => array('default'=>null),
+      ),
+    'Checks if you have updated version of your files for a given photo, the answer can be "missing", "equals" or "differs".<br>Don\'t use "thumbnail_sum" and "high_sum", these parameters are here for backward compatibility.',
+    null
+    );
+
+  $service->addMethod(
+    'pwg.images.checkUpload',
+    'community_ws_images_check_upload',
+    null,
+    'Checks if Piwigo is ready for upload.',
+    null
+    );
+
+  $service->addMethod(
+    'pwg.session.getStatus',
+    'community_ws_session_get_status',
+    null,
+    'Gets information about the current session. Also provides a token useable with admin methods.'
+    );
 
   $service->addMethod(
     'pwg.categories.add',

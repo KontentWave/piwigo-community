@@ -8,6 +8,15 @@ define('IMAGES_TABLE', 'piwigo_images');
 define('ACTIVITY_TABLE', 'piwigo_activity');
 define('LOUNGE_TABLE', 'piwigo_lounge');
 define('TAGS_TABLE', 'piwigo_tags');
+define('PHPWG_VERSION', '16.0.0-test');
+
+class ImageStdParams
+{
+  public static function get_defined_type_map()
+  {
+    return array('square' => array(), 'medium' => array());
+  }
+}
 
 if (!defined('MKGETDIR_DEFAULT'))
 {
@@ -216,6 +225,90 @@ function mkgetdir($directory, $flags = 0)
 function get_pwg_token()
 {
   return isset($GLOBALS['community_test']['pwg_token']) ? $GLOBALS['community_test']['pwg_token'] : 'test-token';
+}
+
+function do_log()
+{
+  return true;
+}
+
+function get_pwg_charset()
+{
+  return 'UTF-8';
+}
+
+function tf_is_profile_liveness_guard_eligible_user($user_id)
+{
+  $GLOBALS['community_test']['two_factor_eligible_checks'][] = $user_id;
+  return !empty($GLOBALS['community_test']['two_factor_eligible']);
+}
+
+function tf_user_has_enabled_two_factor($user_id)
+{
+  $GLOBALS['community_test']['two_factor_enabled_checks'][] = $user_id;
+  return !empty($GLOBALS['community_test']['two_factor_enabled']);
+}
+
+function tf_get_profile_url()
+{
+  return '/profile.php';
+}
+
+function community_test_ws_images_exist($params, $service)
+{
+  $GLOBALS['community_test']['helper_delegate_calls']['pwg.images.exist'][] = $params;
+  return array('core' => true);
+}
+
+function community_test_ws_images_checkFiles($params, $service)
+{
+  $GLOBALS['community_test']['helper_delegate_calls']['pwg.images.checkFiles'][] = $params;
+  return array('core' => true);
+}
+
+function community_test_ws_images_checkUpload($params, $service)
+{
+  $GLOBALS['community_test']['helper_delegate_calls']['pwg.images.checkUpload'][] = $params;
+  return array('ready_for_upload' => true, 'message' => '');
+}
+
+function community_test_ws_session_getStatus($params, &$service)
+{
+  global $user;
+
+  $GLOBALS['community_test']['helper_delegate_calls']['pwg.session.getStatus'][] = $params;
+  $result = array(
+    'username' => $user['username'],
+    'status' => $user['status'],
+    'theme' => $user['theme'],
+    'language' => $user['language'],
+    'pwg_token' => get_pwg_token(),
+    'charset' => 'UTF-8',
+    'current_datetime' => '2026-07-31 12:00:00',
+    'version' => PHPWG_VERSION,
+    'save_visits' => true,
+    'connected_with' => null,
+    'available_sizes' => array('square', 'medium'),
+  );
+
+  if (isset($_SERVER['HTTP_USER_AGENT']) && preg_match('/^PiwigoRemoteSync/', $_SERVER['HTTP_USER_AGENT']))
+  {
+    unset($result['save_visits'], $result['connected_with']);
+  }
+
+  if (isset($_SERVER['HTTP_USER_AGENT']) && str_starts_with($_SERVER['HTTP_USER_AGENT'], 'Apache-HttpClient/'))
+  {
+    unset($result['available_sizes']);
+  }
+
+  return $result;
+}
+
+function community_test_observe_status_after_replacement($arr)
+{
+  global $user;
+
+  $GLOBALS['community_test']['later_handler_statuses'][] = $user['status'];
 }
 
 function conf_update_param($param, $value)
@@ -438,6 +531,18 @@ function community_test_reset_runtime()
     'trigger_notify_calls' => array(),
     'mail_notification_calls' => array(),
     'empty_lounge_calls' => 0,
+    'helper_delegate_calls' => array(
+      'pwg.images.exist' => array(),
+      'pwg.images.checkFiles' => array(),
+      'pwg.images.checkUpload' => array(),
+      'pwg.session.getStatus' => array(),
+    ),
+    'file_hash_calls' => array(),
+    'later_handler_statuses' => array(),
+    'two_factor_eligible_checks' => array(),
+    'two_factor_enabled_checks' => array(),
+    'two_factor_eligible' => false,
+    'two_factor_enabled' => false,
     'temporary_files' => array(),
   );
 
@@ -461,6 +566,7 @@ function community_test_reset_runtime()
   $_REQUEST = array();
   $_SESSION = array();
   $_FILES = array();
+  unset($_SERVER['HTTP_USER_AGENT']);
 
   $conf = array(
     'community' => array('user_albums' => false),
@@ -469,12 +575,18 @@ function community_test_reset_runtime()
     'upload_dir' => '/tmp/community-upload-tests',
     'api_key_forbidden_methods' => array(),
     'uniqueness_mode' => 'md5sum',
+    'upload_form_all_types' => false,
+    'file_ext' => array('jpg', 'jpeg', 'png', 'pdf'),
+    'picture_ext' => array('jpg', 'jpeg', 'png'),
+    'upload_form_chunk_size' => 512,
   );
 
   $user = array(
     'id' => 2,
     'status' => 'normal',
     'username' => 'contributor',
+    'theme' => 'modus',
+    'language' => 'en_UK',
     'email' => 'contributor@example.test',
     'level' => 0,
     'forbidden_categories' => '',
@@ -489,6 +601,48 @@ function community_test_register_core_upload_methods($arr)
   global $conf;
 
   $service = &$arr[0];
+
+  $service->addMethod(
+    'pwg.images.exist',
+    'community_test_ws_images_exist',
+    array(
+      'md5sum_list' => array('default' => null),
+      'filename_list' => array('default' => null),
+    ),
+    'Checks existence of images.',
+    null,
+    array('admin_only' => true)
+  );
+
+  $service->addMethod(
+    'pwg.images.checkFiles',
+    'community_test_ws_images_checkFiles',
+    array(
+      'image_id' => array('type' => WS_TYPE_ID),
+      'file_sum' => array('default' => null),
+      'thumbnail_sum' => array('default' => null),
+      'high_sum' => array('default' => null),
+    ),
+    'Checks files.',
+    null,
+    array('admin_only' => true)
+  );
+
+  $service->addMethod(
+    'pwg.images.checkUpload',
+    'community_test_ws_images_checkUpload',
+    null,
+    'Checks upload readiness.',
+    null,
+    array('admin_only' => true)
+  );
+
+  $service->addMethod(
+    'pwg.session.getStatus',
+    'community_test_ws_session_getStatus',
+    null,
+    'Gets session status.'
+  );
 
   $service->addMethod(
     'pwg.categories.add',
@@ -795,9 +949,9 @@ function community_test_build_service($method_name, $request = array(), $is_admi
 
   $pwg_event_handlers['ws_add_methods'] = array();
   add_event_handler('ws_add_methods', 'community_test_register_core_upload_methods');
-  add_event_handler('ws_add_methods', 'community_switch_user_to_admin', EVENT_HANDLER_PRIORITY_NEUTRAL + 5);
   add_event_handler('ws_add_methods', 'community_add_methods', EVENT_HANDLER_PRIORITY_NEUTRAL + 5);
   add_event_handler('ws_add_methods', 'community_ws_replace_methods', EVENT_HANDLER_PRIORITY_NEUTRAL + 5);
+  add_event_handler('ws_add_methods', 'community_test_observe_status_after_replacement', EVENT_HANDLER_PRIORITY_NEUTRAL + 10);
 
   $service = new PwgServer();
   trigger_notify('ws_add_methods', array(&$service));
