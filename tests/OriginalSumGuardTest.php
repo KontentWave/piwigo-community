@@ -33,8 +33,8 @@ class OriginalSumGuardTest extends TestCase
     $this->assertSame(array('post_only' => true), $uploadMethod['options']);
     $this->assertSame('community_ws_images_upload_async', $uploadAsyncMethod['callback']);
     $this->assertSame(array('post_only' => true), $uploadAsyncMethod['options']);
-    $this->assertSame(array('admin_only' => true), $addMethod['options']);
-    $this->assertSame(array('admin_only' => true, 'post_only' => true), $chunkMethod['options']);
+    $this->assertSame(array(), $addMethod['options']);
+    $this->assertSame(array('post_only' => true), $chunkMethod['options']);
   }
 
   public function testNonAdminUploadAsyncLifecycleAuthorizedSingleCategoryDelegatesOnceWithoutStatusElevation()
@@ -711,7 +711,7 @@ class OriginalSumGuardTest extends TestCase
     $this->assertSame($firstResult, $storedManifest['completed_result']);
   }
 
-  public function testUploadAsyncCleanupArtifactsKeepsLockPathUntilPostUnlockCleanup()
+  public function testUploadAsyncCleanupRetainsStableLockAndExactUnrelatedState()
   {
     $params = $this->buildUploadAsyncParams();
     $paths = $this->getUploadAsyncStatePaths($params);
@@ -745,10 +745,121 @@ class OriginalSumGuardTest extends TestCase
     flock($lockHandle, LOCK_UN);
     fclose($lockHandle);
 
+    $unrelatedStateFile = $paths['state_dir'].'/keep.txt';
+    file_put_contents($unrelatedStateFile, 'keep');
     community_cleanup_upload_async_state_directory($paths);
 
-    $this->assertFileDoesNotExist($paths['lock_file']);
-    $this->assertDirectoryDoesNotExist($paths['state_dir']);
+    $this->assertFileExists($paths['lock_file']);
+    $this->assertDirectoryExists($paths['state_dir']);
+    $this->assertFileExists($unrelatedStateFile);
+  }
+
+  public function testLegacyCleanupRetainsHeldLockAndExactUnrelatedState()
+  {
+    $originalSum = md5('legacy-cleanup');
+    $paths = community_get_legacy_add_state_paths($originalSum);
+
+    $this->assertTrue(community_ensure_directory($paths['chunks_dir']));
+    file_put_contents($paths['lock_file'], 'lock');
+    file_put_contents($paths['manifest_file'], json_encode(array('expires_at' => time() - 1)));
+    file_put_contents($paths['merged_file'], 'merged');
+    file_put_contents($paths['chunks_dir'].'/file-00000.chunk', 'chunk');
+
+    $lockHandle = fopen($paths['lock_file'], 'c+');
+    $this->assertNotFalse($lockHandle);
+    $this->assertTrue(flock($lockHandle, LOCK_EX));
+    $lockStat = fstat($lockHandle);
+
+    community_cleanup_legacy_add_artifacts($paths);
+
+    clearstatcache(true, $paths['lock_file']);
+    $this->assertFileExists($paths['lock_file']);
+    $this->assertSame($lockStat['ino'], stat($paths['lock_file'])['ino']);
+    $this->assertFileDoesNotExist($paths['manifest_file']);
+    $this->assertFileDoesNotExist($paths['merged_file']);
+    $this->assertFileDoesNotExist($paths['chunks_dir']);
+
+    $unrelatedStateFile = $paths['state_dir'].'/keep.txt';
+    file_put_contents($unrelatedStateFile, 'keep');
+    community_cleanup_legacy_add_state_directory($paths);
+
+    $this->assertFileExists($paths['lock_file']);
+    $this->assertFileExists($unrelatedStateFile);
+
+    flock($lockHandle, LOCK_UN);
+    fclose($lockHandle);
+  }
+
+  #[DataProvider('provideUploadStateLockLifecycles')]
+  public function testUploadStateCleanupCannotSplitLockIdentityAcrossProcesses($pathFactory, $cleanupFunction)
+  {
+    if (!function_exists('pcntl_fork') || !function_exists('pcntl_exec') || !function_exists('stream_socket_pair'))
+    {
+      $this->markTestSkipped('pcntl and stream sockets are required for the process-level lock regression');
+    }
+
+    $originalSum = md5('process-lock-'.$pathFactory);
+    $paths = call_user_func($pathFactory, $originalSum);
+    $this->assertTrue(community_ensure_directory($paths['state_dir']));
+
+    $ownerHandle = fopen($paths['lock_file'], 'c+');
+    $this->assertNotFalse($ownerHandle);
+    $this->assertTrue(flock($ownerHandle, LOCK_EX));
+    $ownerStat = fstat($ownerHandle);
+
+    $sockets = stream_socket_pair(STREAM_PF_UNIX, STREAM_SOCK_STREAM, STREAM_IPPROTO_IP);
+    $this->assertNotFalse($sockets);
+
+    $pid = pcntl_fork();
+    $this->assertNotSame(-1, $pid);
+
+    if (0 === $pid)
+    {
+      fclose($sockets[0]);
+      fclose($ownerHandle);
+
+      $contenderHandle = fopen($paths['lock_file'], 'c+');
+      $contenderStat = fstat($contenderHandle);
+      $blocked = !flock($contenderHandle, LOCK_EX | LOCK_NB);
+      fwrite($sockets[1], json_encode(array('blocked' => $blocked, 'inode' => $contenderStat['ino']))."\n");
+
+      fgets($sockets[1]);
+      flock($contenderHandle, LOCK_EX);
+      fwrite($sockets[1], "acquired\n");
+      fgets($sockets[1]);
+
+      flock($contenderHandle, LOCK_UN);
+      fclose($contenderHandle);
+      fclose($sockets[1]);
+      pcntl_exec(PHP_BINARY, array('-r', 'exit(0);'));
+      exit(1);
+    }
+
+    fclose($sockets[1]);
+    $contenderState = json_decode(trim(fgets($sockets[0])), true);
+    $this->assertTrue($contenderState['blocked']);
+    $this->assertSame($ownerStat['ino'], $contenderState['inode']);
+
+    flock($ownerHandle, LOCK_UN);
+    fclose($ownerHandle);
+    fwrite($sockets[0], "continue\n");
+    $this->assertSame('acquired', trim(fgets($sockets[0])));
+
+    call_user_func($cleanupFunction, $paths);
+    clearstatcache(true, $paths['lock_file']);
+    $this->assertFileExists($paths['lock_file']);
+    $this->assertSame($ownerStat['ino'], stat($paths['lock_file'])['ino']);
+
+    $thirdHandle = fopen($paths['lock_file'], 'c+');
+    $this->assertNotFalse($thirdHandle);
+    $this->assertFalse(flock($thirdHandle, LOCK_EX | LOCK_NB));
+    fclose($thirdHandle);
+
+    fwrite($sockets[0], "release\n");
+    fclose($sockets[0]);
+    pcntl_waitpid($pid, $status);
+    $this->assertTrue(pcntl_wifexited($status));
+    $this->assertSame(0, pcntl_wexitstatus($status));
   }
 
   public function testNonAdminUploadAsyncLifecycleExpiresStateAndCleansOnlyExactArtifacts()
@@ -1457,8 +1568,9 @@ class OriginalSumGuardTest extends TestCase
     $this->assertSame(array(), $GLOBALS['community_test']['escaped_values']);
   }
 
-  public function testNonAdminAddLifecycleDelegatesMixedCaseChecksumExactlyOnce()
+  public function testNonAdminAddLifecycleAcceptsMixedCaseChecksumWithPersistedChunks()
   {
+    $chunkContents = 'mixed-case-legacy-upload';
     $service = community_test_build_service(
       'pwg.images.add',
       array(
@@ -1466,6 +1578,13 @@ class OriginalSumGuardTest extends TestCase
         'original_sum' => 'AaBbCcDd00112233445566778899EeFf',
       )
     );
+
+    $chunkResult = $service->invoke('pwg.images.addChunk', array(
+      'data' => base64_encode($chunkContents),
+      'original_sum' => 'AaBbCcDd00112233445566778899EeFf',
+      'position' => 0,
+    ));
+
     $params = array(
       'original_sum' => 'AaBbCcDd00112233445566778899EeFf',
       'categories' => '1',
@@ -1473,23 +1592,18 @@ class OriginalSumGuardTest extends TestCase
     );
     $delegateCalls = 0;
 
-    $GLOBALS['community_ws_images_add_delegate'] = function ($forwardedParams, $forwardedService) use (&$delegateCalls, $service) {
+    $GLOBALS['community_test']['add_uploaded_file_callback'] = function ($source, $filename, $categories, $level, $imageId, $originalSum) use (&$delegateCalls) {
       $delegateCalls++;
-      TestCase::assertSame('AaBbCcDd00112233445566778899EeFf', $forwardedParams['original_sum']);
-      TestCase::assertSame('1', $forwardedParams['categories']);
-      TestCase::assertFalse($forwardedParams['check_uniqueness']);
-      TestCase::assertNull($forwardedParams['original_filename']);
-      TestCase::assertSame(0, $forwardedParams['level']);
-      TestCase::assertSame($service, $forwardedService);
+      TestCase::assertSame('AaBbCcDd00112233445566778899EeFf', $originalSum);
 
-      return array('image_id' => 42);
+      return 42;
     };
 
     $result = $service->invoke('pwg.images.add', $params);
 
-    $this->assertSame(array('image_id' => 42), $result);
+    $this->assertTrue($chunkResult);
+    $this->assertSame(42, $result['image_id']);
     $this->assertSame(1, $delegateCalls);
-    $this->assertSame(array(), $GLOBALS['community_test']['queries']);
   }
 
   #[DataProvider('provideInvalidChecksums')]
@@ -1516,18 +1630,9 @@ class OriginalSumGuardTest extends TestCase
     $this->assertSame(array(), $GLOBALS['community_test']['escaped_values']);
   }
 
-  public function testNonAdminAddChunkLifecycleDelegatesMixedCaseChecksumExactlyOnce()
+  public function testNonAdminAddChunkLifecyclePersistsMixedCaseChecksum()
   {
     $service = community_test_build_service('pwg.images.addChunk');
-    $delegateCalls = 0;
-
-    $GLOBALS['community_ws_images_add_chunk_delegate'] = function ($forwardedParams, $forwardedService) use (&$delegateCalls, $service) {
-      $delegateCalls++;
-      TestCase::assertSame('AaBbCcDd00112233445566778899EeFf', $forwardedParams['original_sum']);
-      TestCase::assertSame($service, $forwardedService);
-
-      return true;
-    };
 
     $result = $service->invoke('pwg.images.addChunk', array(
       'data' => base64_encode('chunk-data'),
@@ -1536,7 +1641,9 @@ class OriginalSumGuardTest extends TestCase
     ));
 
     $this->assertTrue($result);
-    $this->assertSame(1, $delegateCalls);
+    $paths = community_get_legacy_add_state_paths('AaBbCcDd00112233445566778899EeFf');
+    $manifest = community_read_json_file($paths['manifest_file']);
+    $this->assertSame('AaBbCcDd00112233445566778899EeFf', $manifest['original_sum']);
     $this->assertSame(array(), $GLOBALS['community_test']['queries']);
   }
 
@@ -1758,21 +1865,28 @@ class OriginalSumGuardTest extends TestCase
     );
     $delegateCalls = 0;
 
+    $this->assertTrue($service->invoke('pwg.images.addChunk', array(
+      'data' => base64_encode('chunk-data'),
+      'original_sum' => $params['original_sum'],
+      'position' => 0,
+    )));
+    $GLOBALS['community_test']['queries'] = array();
+    $GLOBALS['community_test']['escaped_values'] = array();
+
     $GLOBALS['community_test']['escape_callback'] = function ($value) {
       return str_replace("'", "\\'", $value);
     };
     $GLOBALS['community_test']['fetch_row_return'] = array('0');
-    $GLOBALS['community_ws_images_add_delegate'] = function ($forwardedParams) use (&$delegateCalls, $params) {
+    $GLOBALS['community_test']['add_uploaded_file_callback'] = function ($source, $filename) use (&$delegateCalls, $params) {
       $delegateCalls++;
-      TestCase::assertSame($params['original_filename'], $forwardedParams['original_filename']);
-      TestCase::assertFalse($forwardedParams['check_uniqueness']);
+      TestCase::assertSame($params['original_filename'], $filename);
 
-      return array('image_id' => 99);
+      return 99;
     };
 
     $result = $service->invoke('pwg.images.add', $params);
 
-    $this->assertSame(array('image_id' => 99), $result);
+    $this->assertSame(99, $result['image_id']);
     $this->assertSame(1, $delegateCalls);
     $this->assertSame(array($params['original_filename']), $GLOBALS['community_test']['escaped_values']);
     $this->assertStringContainsString(
@@ -1833,8 +1947,8 @@ class OriginalSumGuardTest extends TestCase
     $this->assertSame(array('admin_only' => true, 'post_only' => true), $addSimpleMethod['options']);
     $this->assertSame('ws_images_add', $addMethod['callback']);
     $this->assertSame('ws_images_add_chunk', $chunkMethod['callback']);
-    $this->assertSame('ws_images_upload', $uploadMethod['callback']);
-    $this->assertSame('ws_images_uploadAsync', $uploadAsyncMethod['callback']);
+    $this->assertSame('community_test_ws_images_upload', $uploadMethod['callback']);
+    $this->assertSame('community_test_ws_images_uploadAsync', $uploadAsyncMethod['callback']);
     $this->assertSame(array('admin_only' => true, 'post_only' => true), $uploadMethod['options']);
     $this->assertSame(array('admin_only' => true, 'post_only' => true), $uploadAsyncMethod['options']);
     $this->assertSame(array('admin_only' => true), $addMethod['options']);
@@ -1873,7 +1987,7 @@ class OriginalSumGuardTest extends TestCase
 
     $method = community_test_get_registered_method($service, 'pwg.images.upload');
 
-    $this->assertSame('ws_images_upload', $method['callback']);
+    $this->assertSame('community_test_ws_images_upload', $method['callback']);
     $this->assertSame(array('admin_only' => true, 'post_only' => true), $method['options']);
   }
 
@@ -1895,7 +2009,7 @@ class OriginalSumGuardTest extends TestCase
 
     $method = community_test_get_registered_method($service, 'pwg.images.uploadAsync');
 
-    $this->assertSame('ws_images_uploadAsync', $method['callback']);
+    $this->assertSame('community_test_ws_images_uploadAsync', $method['callback']);
     $this->assertSame(array('admin_only' => true, 'post_only' => true), $method['options']);
   }
 
@@ -1999,6 +2113,14 @@ class OriginalSumGuardTest extends TestCase
       'date drift' => array(array('date_creation' => '2024-01-01'), array('date_creation' => '2024-01-02')),
       'level drift' => array(array('level' => 2), array('level' => 4)),
       'tag_ids drift' => array(array('tag_ids' => '4,5'), array('tag_ids' => '4,6')),
+    );
+  }
+
+  public static function provideUploadStateLockLifecycles()
+  {
+    return array(
+      'uploadAsync' => array('community_get_upload_async_state_paths', 'community_cleanup_upload_async_state_directory'),
+      'legacy add' => array('community_get_legacy_add_state_paths', 'community_cleanup_legacy_add_state_directory'),
     );
   }
 

@@ -497,17 +497,7 @@ function community_cleanup_upload_async_artifacts($manifest, $paths, $remove_rec
 
 function community_cleanup_upload_async_state_directory($paths)
 {
-  if (is_file($paths['manifest_file']) || is_dir($paths['chunks_dir']) || is_file($paths['receipt_file']) || is_file($paths['merged_file']))
-  {
-    return;
-  }
-
-  community_delete_path($paths['lock_file']);
-
-  if (is_dir($paths['state_dir']))
-  {
-    community_delete_path($paths['state_dir']);
-  }
+  // Keep the state directory and lock inode stable for the upload lifecycle.
 }
 
 function community_upload_async_uploaded_chunk_numbers($manifest)
@@ -1238,17 +1228,7 @@ function community_get_legacy_add_state_paths($original_sum, $user_id = null, $s
 
 function community_cleanup_legacy_add_state_directory($paths)
 {
-  if (is_file($paths['manifest_file']) || is_dir($paths['chunks_dir']) || is_file($paths['merged_file']))
-  {
-    return;
-  }
-
-  community_delete_path($paths['lock_file']);
-
-  if (is_dir($paths['state_dir']))
-  {
-    community_delete_path($paths['state_dir']);
-  }
+  // Keep the state directory and lock inode stable for the upload lifecycle.
 }
 
 function community_cleanup_legacy_add_artifacts($paths)

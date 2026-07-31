@@ -213,6 +213,46 @@ function community_test_ws_images_uploadAsync($params, $service)
   );
 }
 
+function community_test_ws_images_addSimple($params, $service)
+{
+  if (!empty($params['image_id']))
+  {
+    pwg_query('SELECT id FROM '.IMAGES_TABLE.' WHERE id = '.(int) $params['image_id'].';');
+  }
+
+  $image_id = community_call_add_uploaded_file(
+    $_FILES['image']['tmp_name'],
+    $_FILES['image']['name'],
+    $params['category'],
+    8,
+    $params['image_id'] > 0 ? $params['image_id'] : null
+  );
+
+  $update = array();
+  foreach (array('name', 'author', 'comment', 'level', 'date_creation') as $key)
+  {
+    if (isset($params[$key]))
+    {
+      $update[$key] = $params[$key];
+    }
+  }
+
+  single_update(IMAGES_TABLE, $update, array('id' => $image_id));
+
+  $url_params = array('image_id' => $image_id);
+  if (!empty($params['category']))
+  {
+    $result = pwg_query('SELECT id, name, permalink FROM '.CATEGORIES_TABLE.' WHERE id = '.(int) $params['category'][0].';');
+    $url_params['section'] = 'categories';
+    $url_params['category'] = pwg_db_fetch_assoc($result);
+  }
+
+  return array(
+    'image_id' => $image_id,
+    'url' => make_picture_url($url_params),
+  );
+}
+
 function community_test_create_uploaded_chunk($contents, $filename = 'chunk.bin')
 {
   $temp_path = tempnam(sys_get_temp_dir(), 'community-upload-async-');
@@ -533,6 +573,7 @@ function community_test_build_service($method_name, $request = array(), $is_admi
   $_FILES = $files;
 
   $GLOBALS['community_test']['is_admin'] = $is_admin;
+  $GLOBALS['community_ws_images_add_simple_delegate'] = 'community_test_ws_images_addSimple';
   $user['id'] = $is_admin ? 1 : 2;
   $user['status'] = $is_admin ? 'admin' : 'normal';
 
