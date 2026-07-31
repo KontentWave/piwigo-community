@@ -10,6 +10,174 @@ class OriginalSumGuardTest extends TestCase
     community_test_reset_runtime();
   }
 
+  public function testContentCreationLifecycleRegistersPostOnlyCommunityWrappers()
+  {
+    $service = community_test_build_service('pwg.categories.add', array('name' => 'Child', 'parent' => 1));
+
+    $categoryMethod = community_test_get_registered_method($service, 'pwg.categories.add');
+    $tagMethod = community_test_get_registered_method($service, 'pwg.tags.add');
+
+    $this->assertSame('community_ws_categories_add', $categoryMethod['callback']);
+    $this->assertSame(array('post_only' => true), $categoryMethod['options']);
+    $this->assertSame('community_ws_tags_add', $tagMethod['callback']);
+    $this->assertSame(array('post_only' => true), $tagMethod['options']);
+    $this->assertArrayHasKey('pwg_token', $tagMethod['signature']);
+  }
+
+  public function testAuthorizedContentCreationDelegatesOnceWithoutGlobalMutation()
+  {
+    global $conf, $user;
+
+    $service = community_test_build_service('pwg.categories.add', array('name' => 'Child', 'parent' => 1));
+    $_SESSION['community_user_permissions']['create_categories'] = array(1);
+    $status = $user['status'];
+    $request = $_REQUEST;
+    $post = $_POST;
+    $configuration = $conf;
+
+    $categoryResult = $service->invoke('pwg.categories.add', array(
+      'name' => '<b>Child</b><script>bad()</script>',
+      'parent' => 1,
+      'comment' => '<em>Comment</em><script>bad()</script>',
+      'visible' => true,
+      'status' => 'public',
+      'commentable' => true,
+      'pwg_token' => 'test-token',
+    ));
+
+    $this->assertSame(21, $categoryResult['id']);
+    $this->assertCount(1, $GLOBALS['community_test']['category_delegate_calls']);
+    $this->assertSame('Childbad()', $GLOBALS['community_test']['category_delegate_calls'][0]['name']);
+    $this->assertSame('Commentbad()', $GLOBALS['community_test']['category_delegate_calls'][0]['comment']);
+    $this->assertSame(1, $GLOBALS['community_test']['community_cache_invalidations']);
+    $this->assertSame($status, $user['status']);
+    $this->assertSame($request, $_REQUEST);
+    $this->assertSame($post, $_POST);
+    $this->assertNotSame($configuration['community_cache_key'], $conf['community_cache_key']);
+    unset($configuration['community_cache_key'], $conf['community_cache_key']);
+    $this->assertSame($configuration, $conf);
+
+    $service = community_test_build_service('pwg.tags.add', array('name' => 'Landscape'));
+    $tagResult = $service->invoke('pwg.tags.add', array('name' => 'Landscape', 'pwg_token' => 'test-token'));
+
+    $this->assertSame(31, $tagResult['id']);
+    $this->assertCount(1, $GLOBALS['community_test']['tag_delegate_calls']);
+    $this->assertCount(1, $GLOBALS['community_test']['activity_calls']);
+    $this->assertSame('normal', $user['status']);
+  }
+
+  #[DataProvider('provideDeniedCategoryCreationRequests')]
+  public function testCategoryCreationRejectsInvalidAuthorizationAndInputsBeforeDelegation($permissions, $params)
+  {
+    $service = community_test_build_service('pwg.categories.add', $params);
+    $_SESSION['community_user_permissions'] = array_merge($_SESSION['community_user_permissions'], $permissions);
+
+    $result = $service->invoke('pwg.categories.add', $params);
+
+    $this->assertInstanceOf(PwgError::class, $result);
+    $this->assertCount(0, $GLOBALS['community_test']['category_delegate_calls']);
+    $this->assertSame(0, $GLOBALS['community_test']['invalidate_user_cache_calls']);
+  }
+
+  public function testCategoryCreationSupportsAuthorizedRoot()
+  {
+    $service = community_test_build_service('pwg.categories.add', array('name' => 'Root'));
+    $_SESSION['community_user_permissions']['create_whole_gallery'] = true;
+
+    $root = $service->invoke('pwg.categories.add', array('name' => 'Root', 'parent' => 0, 'pwg_token' => 'test-token'));
+
+    $this->assertSame(21, $root['id']);
+    $this->assertCount(1, $GLOBALS['community_test']['category_delegate_calls']);
+  }
+
+  public function testContentCreationRejectsStaleTokenBeforeDelegation()
+  {
+    $service = community_test_build_service('pwg.categories.add', array('name' => 'Child', 'parent' => 1));
+    $_SESSION['community_user_permissions']['create_categories'] = array(1);
+    $GLOBALS['community_test']['pwg_token'] = 'rotated-token';
+
+    $categoryResult = $service->invoke('pwg.categories.add', array('name' => 'Child', 'parent' => 1, 'pwg_token' => 'test-token'));
+    $tagResult = $service->invoke('pwg.tags.add', array('name' => 'Landscape', 'pwg_token' => 'test-token'));
+
+    $this->assertInstanceOf(PwgError::class, $categoryResult);
+    $this->assertInstanceOf(PwgError::class, $tagResult);
+    $this->assertCount(0, $GLOBALS['community_test']['category_delegate_calls']);
+    $this->assertCount(0, $GLOBALS['community_test']['tag_delegate_calls']);
+    $this->assertCount(0, $GLOBALS['community_test']['activity_calls']);
+    $this->assertSame(0, $GLOBALS['community_test']['community_cache_invalidations']);
+  }
+
+  public function testCategoryCreationRechecksAuthorizationBeforeDelegation()
+  {
+    $service = community_test_build_service('pwg.categories.add', array('name' => 'Child', 'parent' => 1));
+    $_SESSION['community_user_permissions']['create_categories'] = array(1);
+    $GLOBALS['community_test']['category_before_second_authorization'] = function () {
+      $_SESSION['community_user_permissions']['create_categories'] = array();
+    };
+
+    $result = $service->invoke('pwg.categories.add', array('name' => 'Child', 'parent' => 1, 'pwg_token' => 'test-token'));
+
+    $this->assertInstanceOf(PwgError::class, $result);
+    $this->assertCount(0, $GLOBALS['community_test']['category_delegate_calls']);
+    $this->assertSame(0, $GLOBALS['community_test']['community_cache_invalidations']);
+  }
+
+  public function testTagCreationRechecksUploadGrantBeforeDelegation()
+  {
+    $service = community_test_build_service('pwg.tags.add', array('name' => 'Landscape'));
+    $permissionReads = 0;
+    $GLOBALS['community_test']['query_callback'] = function ($query) use (&$permissionReads) {
+      if (false !== strpos($query, COMMUNITY_PERMISSIONS_TABLE))
+      {
+        $permissionReads++;
+      }
+
+      return $query;
+    };
+    $GLOBALS['community_test']['tag_before_second_authorization'] = function () {
+      $_SESSION['community_user_permissions']['upload_categories'] = array();
+    };
+
+    $result = community_ws_tags_add(array('name' => 'Landscape', 'pwg_token' => 'test-token'), $service);
+
+    $this->assertInstanceOf(PwgError::class, $result);
+    $this->assertCount(0, $GLOBALS['community_test']['tag_delegate_calls']);
+  }
+
+  #[DataProvider('provideDeniedTagCreationRequests')]
+  public function testTagCreationRequiresUploadGrantValidNameAndToken($permissions, $params)
+  {
+    $service = community_test_build_service('pwg.tags.add', $params);
+    $_SESSION['community_user_permissions'] = array_merge($_SESSION['community_user_permissions'], $permissions);
+
+    $result = $service->invoke('pwg.tags.add', $params);
+
+    $this->assertInstanceOf(PwgError::class, $result);
+    $this->assertCount(0, $GLOBALS['community_test']['tag_delegate_calls']);
+    $this->assertCount(0, $GLOBALS['community_test']['activity_calls']);
+  }
+
+  public function testContentCreationAdministratorAndExplicitBypassKeepCoreCallbacks()
+  {
+    $admin = community_test_build_service('pwg.categories.add', array('name' => 'Admin', 'position' => 'first'), true);
+    $this->assertSame('community_test_ws_categories_add', community_test_get_registered_method($admin, 'pwg.categories.add')['callback']);
+    $this->assertSame(array('admin_only' => true), community_test_get_registered_method($admin, 'pwg.categories.add')['options']);
+    $this->assertSame('community_test_ws_tags_add', community_test_get_registered_method($admin, 'pwg.tags.add')['callback']);
+
+    $bypass = community_test_build_service('pwg.tags.add', array('name' => 'Tag', 'faked_by_community' => 'false'));
+    $this->assertSame('community_test_ws_categories_add', community_test_get_registered_method($bypass, 'pwg.categories.add')['callback']);
+    $this->assertSame('community_test_ws_tags_add', community_test_get_registered_method($bypass, 'pwg.tags.add')['callback']);
+  }
+
+  public function testBrowserAlbumCreationSendsTokenAndHandlesStructuredFailure()
+  {
+    $template = file_get_contents(dirname(__DIR__).'/template/add_photos.tpl');
+
+    $this->assertStringContainsString('pwg_token: pwg_token', $template);
+    $this->assertStringContainsString('dataType: "json"', $template);
+    $this->assertStringContainsString('responseJSON', $template);
+  }
+
   public function testNonAdminLifecycleRegistersCommunityWrappers()
   {
     $service = community_test_build_service(
@@ -2917,6 +3085,41 @@ class OriginalSumGuardTest extends TestCase
     return array(
       'missing' => array(null, false),
       'invalid' => array('wrong-token', true),
+    );
+  }
+
+  public static function provideDeniedCategoryCreationRequests()
+  {
+    $allowed = array('create_categories' => array(1));
+
+    return array(
+      'missing token' => array($allowed, array('name' => 'Child', 'parent' => 1)),
+      'invalid token' => array($allowed, array('name' => 'Child', 'parent' => 1, 'pwg_token' => 'wrong')),
+      'missing parent without root grant' => array($allowed, array('name' => 'Child', 'pwg_token' => 'test-token')),
+      'negative parent' => array($allowed, array('name' => 'Child', 'parent' => -1, 'pwg_token' => 'test-token')),
+      'fractional parent' => array($allowed, array('name' => 'Child', 'parent' => '1.5', 'pwg_token' => 'test-token')),
+      'array parent' => array($allowed, array('name' => 'Child', 'parent' => array(1), 'pwg_token' => 'test-token')),
+      'unauthorized parent' => array($allowed, array('name' => 'Child', 'parent' => 2, 'pwg_token' => 'test-token')),
+      'upload grant only' => array(array('create_categories' => array()), array('name' => 'Child', 'parent' => 1, 'pwg_token' => 'test-token')),
+      'empty name' => array($allowed, array('name' => ' ', 'parent' => 1, 'pwg_token' => 'test-token')),
+      'missing name' => array($allowed, array('parent' => 1, 'pwg_token' => 'test-token')),
+      'non scalar name' => array($allowed, array('name' => array('Child'), 'parent' => 1, 'pwg_token' => 'test-token')),
+      'invalid status' => array($allowed, array('name' => 'Child', 'parent' => 1, 'status' => 'hidden', 'pwg_token' => 'test-token')),
+      'position' => array($allowed, array('name' => 'Child', 'parent' => 1, 'position' => 'last', 'pwg_token' => 'test-token')),
+      'empty position' => array($allowed, array('name' => 'Child', 'parent' => 1, 'position' => '', 'pwg_token' => 'test-token')),
+      'zero position' => array($allowed, array('name' => 'Child', 'parent' => 1, 'position' => '0', 'pwg_token' => 'test-token')),
+    );
+  }
+
+  public static function provideDeniedTagCreationRequests()
+  {
+    return array(
+      'category creation only' => array(array('upload_categories' => array(), 'create_categories' => array(1)), array('name' => 'Tag', 'pwg_token' => 'test-token')),
+      'no grant' => array(array('upload_categories' => array(), 'create_categories' => array()), array('name' => 'Tag', 'pwg_token' => 'test-token')),
+      'missing token' => array(array('upload_categories' => array(1)), array('name' => 'Tag')),
+      'invalid token' => array(array('upload_categories' => array(1)), array('name' => 'Tag', 'pwg_token' => 'wrong')),
+      'empty name' => array(array('upload_categories' => array(1)), array('name' => ' ', 'pwg_token' => 'test-token')),
+      'non scalar name' => array(array('upload_categories' => array(1)), array('name' => array('Tag'), 'pwg_token' => 'test-token')),
     );
   }
 

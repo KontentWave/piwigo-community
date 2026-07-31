@@ -137,14 +137,16 @@ jQuery(document).ready(function(){
         data: {
           parent: jQuery("select[name=category_parent] option:selected").val(),
           name: jQuery("input[name=category_name]").val(),
+          pwg_token: pwg_token,
         },
+        dataType: "json",
         beforeSend: function() {
           jQuery("#albumCreationLoading").show();
         },
-        success:function(html) {
+        success:function(data) {
           jQuery("#albumCreationLoading").hide();
 
-          var newAlbum = jQuery.parseJSON(html).result.id;
+          var newAlbum = data.result.id;
           jQuery(".addAlbumOpen").colorbox.close();
 
           jQuery("#albumSelect").find("option").remove();
@@ -160,7 +162,9 @@ jQuery(document).ready(function(){
         },
         error:function(XMLHttpRequest, textStatus, errorThrows) {
             jQuery("#albumCreationLoading").hide();
-            jQuery("#categoryNameError").text(errorThrows).css("color", "red");
+          var response = XMLHttpRequest.responseJSON;
+          var creationFailed = response && response.message ? response.message : (errorThrows || textStatus);
+          jQuery("#categoryNameError").text(creationFailed).css("color", "red");
         }
       });
 

@@ -339,7 +339,6 @@ function community_switch_user_to_admin($arr)
   // if level of trust is low, then we have to set level to 16
 
   $methods = array();
-  $methods[] = 'pwg.tags.add';
   $methods[] = 'pwg.images.exist';
   $methods[] = 'pwg.images.checkUpload';
   $methods[] = 'pwg.images.checkFiles';
@@ -348,15 +347,6 @@ function community_switch_user_to_admin($arr)
   if (in_array($community['method'], $methods))
   {
     $user['status'] = 'admin';
-  }
-
-  if ('pwg.categories.add' == $community['method'])
-  {
-    if (in_array($_REQUEST['parent'], $user_permissions['create_categories'])
-        or $user_permissions['create_whole_gallery'])
-    {
-      $user['status'] = 'admin';
-    }
   }
 
   return;
@@ -424,6 +414,39 @@ function community_ws_replace_methods($arr)
   {
     return;
   }
+
+  community_capture_ws_method_delegate($service, 'pwg.categories.add', 'community_ws_categories_add_delegate_method');
+  community_capture_ws_method_delegate($service, 'pwg.tags.add', 'community_ws_tags_add_delegate_method');
+
+  $service->addMethod(
+    'pwg.categories.add',
+    'community_ws_categories_add',
+    array(
+      'name' => array(),
+      'parent' => array('type'=>WS_TYPE_INT|WS_TYPE_POSITIVE),
+      'comment' => array('default'=>null),
+      'visible' => array('default'=>true, 'type'=>WS_TYPE_BOOL),
+      'status' => array('default'=>null, 'info'=>'public, private'),
+      'commentable' => array('default'=>true, 'type'=>WS_TYPE_BOOL),
+      'position' => array('default'=>null, 'info'=>'first, last'),
+      'pwg_token' => array(),
+      ),
+    'Adds an album.',
+    null,
+    array('post_only'=>true)
+    );
+
+  $service->addMethod(
+    'pwg.tags.add',
+    'community_ws_tags_add',
+    array(
+      'name' => array(),
+      'pwg_token' => array(),
+      ),
+    'Adds a new tag.',
+    null,
+    array('post_only'=>true)
+    );
 
   $service->addMethod(
     'pwg.images.delete',

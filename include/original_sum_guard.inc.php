@@ -11,6 +11,174 @@ function community_invalid_original_sum_error()
   return new PwgError(WS_ERR_INVALID_PARAM, 'Invalid original_sum');
 }
 
+function community_capture_ws_method_delegate($service, $method_name, $global_name)
+{
+  if (isset($service->_methods[$method_name]))
+  {
+    $GLOBALS[$global_name] = $service->_methods[$method_name];
+  }
+}
+
+function community_call_captured_ws_method($global_name, $params, $service)
+{
+  if (!isset($GLOBALS[$global_name]))
+  {
+    return new PwgError(403, 'Forbidden');
+  }
+
+  $method = $GLOBALS[$global_name];
+  if (!empty($method['include']))
+  {
+    include_once($method['include']);
+  }
+
+  return call_user_func($method['callback'], $params, $service);
+}
+
+function community_content_creation_error()
+{
+  return new PwgError(403, 'Forbidden');
+}
+
+function community_is_valid_content_name($name)
+{
+  return is_string($name) && trim($name) !== '';
+}
+
+function community_normalize_category_parent($parent, &$normalized_parent)
+{
+  if (null === $parent || 0 === $parent || '0' === $parent)
+  {
+    $normalized_parent = null;
+    return true;
+  }
+
+  if (is_int($parent) && $parent > 0)
+  {
+    $normalized_parent = $parent;
+    return true;
+  }
+
+  if (is_string($parent) && preg_match('/^[1-9][0-9]*$/D', $parent))
+  {
+    $normalized_parent = (int) $parent;
+    return true;
+  }
+
+  return false;
+}
+
+function community_category_parent_exists($parent_id)
+{
+  if (null === $parent_id)
+  {
+    return true;
+  }
+
+  $query = '
+SELECT id
+  FROM '.CATEGORIES_TABLE.'
+  WHERE id IN ('.(int) $parent_id.')
+;';
+
+  return in_array((string) $parent_id, array_map('strval', query2array($query, null, 'id')), true);
+}
+
+function community_authorize_category_creation($parent_id)
+{
+  global $user;
+
+  $permissions = community_get_user_permissions($user['id']);
+  if (null === $parent_id)
+  {
+    return !empty($permissions['create_whole_gallery']);
+  }
+
+  return community_category_parent_exists($parent_id)
+    && in_array($parent_id, array_map('intval', $permissions['create_categories']), true);
+}
+
+function community_ws_categories_add($params, &$service)
+{
+  if (!isset($params['pwg_token']) || !is_string($params['pwg_token']) || get_pwg_token() !== $params['pwg_token'])
+  {
+    return community_content_creation_error();
+  }
+
+  $parent = null;
+  if (!array_key_exists('parent', $params)
+    || !community_normalize_category_parent($params['parent'], $parent)
+    || !isset($params['name'])
+    || !community_is_valid_content_name($params['name'])
+    || null !== $params['position']
+    || (null !== $params['status'] && !in_array($params['status'], array('private', 'public'), true))
+    || !is_bool($params['visible'])
+    || !is_bool($params['commentable'])
+    || (null !== $params['comment'] && !is_string($params['comment']))
+    || !community_authorize_category_creation($parent))
+  {
+    return community_content_creation_error();
+  }
+
+  $params['parent'] = $parent;
+  $params['name'] = strip_tags($params['name']);
+  if (null !== $params['comment'])
+  {
+    $params['comment'] = strip_tags($params['comment']);
+  }
+
+  if (isset($GLOBALS['community_test']['category_before_second_authorization']))
+  {
+    call_user_func($GLOBALS['community_test']['category_before_second_authorization']);
+  }
+
+  if (!community_authorize_category_creation($parent))
+  {
+    return community_content_creation_error();
+  }
+
+  $result = community_call_captured_ws_method('community_ws_categories_add_delegate_method', $params, $service);
+  if (!($result instanceof PwgError))
+  {
+    community_update_cache_key();
+  }
+
+  return $result;
+}
+
+function community_ws_tags_add($params, &$service)
+{
+  global $user;
+
+  if (!isset($params['pwg_token'])
+    || !is_string($params['pwg_token'])
+    || get_pwg_token() !== $params['pwg_token']
+    || !isset($params['name'])
+    || !community_is_valid_content_name($params['name']))
+  {
+    return community_content_creation_error();
+  }
+
+  $permissions = community_get_user_permissions($user['id']);
+  if (empty($permissions['upload_categories']))
+  {
+    return community_content_creation_error();
+  }
+
+  if (isset($GLOBALS['community_test']['tag_before_second_authorization']))
+  {
+    call_user_func($GLOBALS['community_test']['tag_before_second_authorization']);
+  }
+
+  $permissions = community_get_user_permissions($user['id']);
+  if (empty($permissions['upload_categories']))
+  {
+    return community_content_creation_error();
+  }
+
+  return community_call_captured_ws_method('community_ws_tags_add_delegate_method', $params, $service);
+}
+
 function community_capture_original_sum_from_request(&$community_state, $request)
 {
   if (!isset($request['original_sum']) || !community_is_valid_original_sum($request['original_sum']))

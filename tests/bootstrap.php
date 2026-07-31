@@ -215,7 +215,20 @@ function mkgetdir($directory, $flags = 0)
 
 function get_pwg_token()
 {
-  return 'test-token';
+  return isset($GLOBALS['community_test']['pwg_token']) ? $GLOBALS['community_test']['pwg_token'] : 'test-token';
+}
+
+function conf_update_param($param, $value)
+{
+  global $conf;
+
+  $conf[$param] = $value;
+  $GLOBALS['community_test']['community_cache_invalidations']++;
+}
+
+function generate_key($length)
+{
+  return str_repeat('n', $length);
 }
 
 function make_picture_url($params)
@@ -416,6 +429,11 @@ function community_test_reset_runtime()
     'metadata_sync_calls' => array(),
     'picture_urls' => array(),
     'invalidate_user_cache_calls' => 0,
+    'community_cache_invalidations' => 0,
+    'category_delegate_calls' => array(),
+    'tag_delegate_calls' => array(),
+    'activity_calls' => array(),
+    'pwg_token' => 'test-token',
     'associate_images_to_categories_calls' => array(),
     'trigger_notify_calls' => array(),
     'mail_notification_calls' => array(),
@@ -431,6 +449,10 @@ function community_test_reset_runtime()
     $GLOBALS['community_ws_images_upload_async_delegate'],
     $GLOBALS['community_ws_images_set_info_delegate'],
     $GLOBALS['community_ws_images_delete_delegate'],
+    $GLOBALS['community_ws_categories_add_delegate'],
+    $GLOBALS['community_ws_tags_add_delegate'],
+    $GLOBALS['community_test']['category_before_second_authorization'],
+    $GLOBALS['community_test']['tag_before_second_authorization'],
     $GLOBALS['community_test_write_json_file_callback']
   );
 
@@ -467,6 +489,33 @@ function community_test_register_core_upload_methods($arr)
   global $conf;
 
   $service = &$arr[0];
+
+  $service->addMethod(
+    'pwg.categories.add',
+    'community_test_ws_categories_add',
+    array(
+      'name' => array(),
+      'parent' => array('type' => WS_TYPE_INT | WS_TYPE_POSITIVE),
+      'comment' => array('default' => null),
+      'visible' => array('default' => true, 'type' => WS_TYPE_BOOL),
+      'status' => array('default' => null),
+      'commentable' => array('default' => true, 'type' => WS_TYPE_BOOL),
+      'position' => array('default' => null),
+      'pwg_token' => array('flags' => WS_PARAM_OPTIONAL),
+    ),
+    'Adds an album.',
+    null,
+    array('admin_only' => true)
+  );
+
+  $service->addMethod(
+    'pwg.tags.add',
+    'community_test_ws_tags_add',
+    array('name' => array()),
+    'Adds a new tag.',
+    null,
+    array('admin_only' => true)
+  );
 
   $service->addMethod(
     'pwg.images.delete',
@@ -678,6 +727,32 @@ function community_test_register_core_upload_methods($arr)
     null,
     array('admin_only' => true, 'post_only' => true)
   );
+}
+
+function community_test_ws_categories_add($params, $service)
+{
+  $GLOBALS['community_test']['category_delegate_calls'][] = $params;
+
+  if (isset($GLOBALS['community_ws_categories_add_delegate']))
+  {
+    return call_user_func($GLOBALS['community_ws_categories_add_delegate'], $params, $service);
+  }
+
+  return array('info' => 'Album added', 'id' => 21);
+}
+
+function community_test_ws_tags_add($params, $service)
+{
+  $GLOBALS['community_test']['tag_delegate_calls'][] = $params;
+
+  if (isset($GLOBALS['community_ws_tags_add_delegate']))
+  {
+    return call_user_func($GLOBALS['community_ws_tags_add_delegate'], $params, $service);
+  }
+
+  $GLOBALS['community_test']['activity_calls'][] = array('tag', 31, 'add');
+
+  return array('info' => 'Tag added', 'id' => 31, 'name' => $params['name'], 'url_name' => $params['name']);
 }
 
 function community_test_get_registered_method($service, $method_name)
