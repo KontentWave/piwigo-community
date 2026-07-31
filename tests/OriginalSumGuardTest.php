@@ -41,13 +41,16 @@ class OriginalSumGuardTest extends TestCase
   {
     global $user;
 
+    $chunkContents = 'single-chunk';
+    $chunkSum = md5($chunkContents);
+
     $service = community_test_build_service(
       'pwg.images.uploadAsync',
       array(
         'chunk' => 1,
-        'chunk_sum' => 'AaBbCcDd00112233445566778899EeFf',
+        'chunk_sum' => $chunkSum,
         'chunks' => 1,
-        'original_sum' => 'AaBbCcDd00112233445566778899EeFf',
+        'original_sum' => $chunkSum,
         'category' => '1',
         'filename' => 'upload.jpg',
       )
@@ -66,11 +69,13 @@ class OriginalSumGuardTest extends TestCase
       return array('image_id' => 654, 'message' => 'chunks uploaded = 1');
     };
 
+    $_FILES['file'] = community_test_create_uploaded_chunk($chunkContents);
+
     $result = $service->invoke('pwg.images.uploadAsync', array(
       'chunk' => 1,
-      'chunk_sum' => 'AaBbCcDd00112233445566778899EeFf',
+      'chunk_sum' => $chunkSum,
       'chunks' => 1,
-      'original_sum' => 'AaBbCcDd00112233445566778899EeFf',
+      'original_sum' => $chunkSum,
       'category' => '1',
       'filename' => 'upload.jpg',
     ));
@@ -119,13 +124,16 @@ class OriginalSumGuardTest extends TestCase
   {
     global $user;
 
+    $chunkContents = 'single-chunk';
+    $chunkSum = md5($chunkContents);
+
     $service = community_test_build_service(
       'pwg.images.uploadAsync',
       array(
         'chunk' => 1,
-        'chunk_sum' => 'AaBbCcDd00112233445566778899EeFf',
+        'chunk_sum' => $chunkSum,
         'chunks' => 1,
-        'original_sum' => 'AaBbCcDd00112233445566778899EeFf',
+        'original_sum' => $chunkSum,
         'category' => '1',
         'filename' => 'upload.jpg',
         'image_id' => 77,
@@ -146,11 +154,13 @@ class OriginalSumGuardTest extends TestCase
       return array('image_id' => 77, 'message' => 'chunks uploaded = 1');
     };
 
+    $_FILES['file'] = community_test_create_uploaded_chunk($chunkContents);
+
     $result = $service->invoke('pwg.images.uploadAsync', array(
       'chunk' => 1,
-      'chunk_sum' => 'AaBbCcDd00112233445566778899EeFf',
+      'chunk_sum' => $chunkSum,
       'chunks' => 1,
-      'original_sum' => 'AaBbCcDd00112233445566778899EeFf',
+      'original_sum' => $chunkSum,
       'category' => '1',
       'filename' => 'upload.jpg',
       'image_id' => 77,
@@ -166,13 +176,16 @@ class OriginalSumGuardTest extends TestCase
   {
     global $user;
 
+    $chunkContents = 'single-chunk';
+    $chunkSum = md5($chunkContents);
+
     $service = community_test_build_service(
       'pwg.images.uploadAsync',
       array(
         'chunk' => 1,
-        'chunk_sum' => 'AaBbCcDd00112233445566778899EeFf',
+        'chunk_sum' => $chunkSum,
         'chunks' => 1,
-        'original_sum' => 'AaBbCcDd00112233445566778899EeFf',
+        'original_sum' => $chunkSum,
         'category' => '1',
         'filename' => 'upload.jpg',
         'image_id' => 77,
@@ -190,11 +203,13 @@ class OriginalSumGuardTest extends TestCase
       return array('image_id' => 77, 'message' => 'chunks uploaded = 1');
     };
 
+    $_FILES['file'] = community_test_create_uploaded_chunk($chunkContents);
+
     $result = $service->invoke('pwg.images.uploadAsync', array(
       'chunk' => 1,
-      'chunk_sum' => 'AaBbCcDd00112233445566778899EeFf',
+      'chunk_sum' => $chunkSum,
       'chunks' => 1,
-      'original_sum' => 'AaBbCcDd00112233445566778899EeFf',
+      'original_sum' => $chunkSum,
       'category' => '1',
       'filename' => 'upload.jpg',
       'image_id' => 77,
@@ -206,6 +221,549 @@ class OriginalSumGuardTest extends TestCase
     $this->assertSame(0, $delegateCalls);
     $this->assertCount(2, $GLOBALS['community_test']['queries']);
     $this->assertStringContainsString('session_idx', $GLOBALS['community_test']['queries'][1]);
+  }
+
+  public function testNonAdminUploadAsyncLifecycleRejectsCategoryDriftAcrossChunksBeforeDelegateCall()
+  {
+    $service = community_test_build_service(
+      'pwg.images.uploadAsync',
+      array(
+          'chunk' => 0,
+        'chunk_sum' => '11111111111111111111111111111111',
+        'chunks' => 2,
+        'original_sum' => 'AaBbCcDd00112233445566778899EeFf',
+        'category' => '1',
+        'filename' => 'upload.jpg',
+      )
+    );
+
+    $delegateCalls = 0;
+    $GLOBALS['community_ws_images_upload_async_delegate'] = function () use (&$delegateCalls) {
+      $delegateCalls++;
+      return array('message' => 'chunks uploaded = 1');
+    };
+
+    $_FILES['file'] = community_test_create_uploaded_chunk('first-chunk');
+    $firstResult = $service->invoke('pwg.images.uploadAsync', array(
+      'chunk' => 0,
+      'chunk_sum' => md5('first-chunk'),
+      'chunks' => 2,
+      'original_sum' => 'AaBbCcDd00112233445566778899EeFf',
+      'category' => '1',
+      'filename' => 'upload.jpg',
+    ));
+
+    $_FILES['file'] = community_test_create_uploaded_chunk('second-chunk');
+    $secondResult = $service->invoke('pwg.images.uploadAsync', array(
+      'chunk' => 1,
+      'chunk_sum' => md5('second-chunk'),
+      'chunks' => 2,
+      'original_sum' => 'AaBbCcDd00112233445566778899EeFf',
+      'category' => '2',
+      'filename' => 'upload.jpg',
+    ));
+
+    $this->assertSame(array('message' => 'chunks uploaded = 1'), $firstResult);
+    $this->assertInstanceOf(PwgError::class, $secondResult);
+    $this->assertSame(401, $secondResult->code());
+    $this->assertSame('Access denied', $secondResult->message());
+    $this->assertSame(0, $delegateCalls);
+  }
+
+  public function testNonAdminUploadAsyncLifecycleCompletesOutOfOrderChunksWithoutStatusElevation()
+  {
+    global $user;
+
+    $service = community_test_build_service(
+      'pwg.images.uploadAsync',
+      $this->buildUploadAsyncParams()
+    );
+
+    $delegateCalls = 0;
+    $statusBefore = $user['status'];
+    $GLOBALS['community_ws_images_upload_async_delegate'] = function ($forwardedParams, $forwardedService) use (&$delegateCalls, &$user, $service, $statusBefore) {
+      $delegateCalls++;
+      TestCase::assertSame('normal', $user['status']);
+      TestCase::assertSame($statusBefore, $user['status']);
+      TestCase::assertSame(array(1), $forwardedParams['category']);
+      TestCase::assertSame('upload.jpg', $forwardedParams['filename']);
+      TestCase::assertSame($service, $forwardedService);
+
+      return array('image_id' => 654, 'message' => 'complete');
+    };
+
+    $_FILES['file'] = community_test_create_uploaded_chunk('second-chunk');
+    $firstResult = $service->invoke('pwg.images.uploadAsync', $this->buildUploadAsyncParams(array(
+      'chunk' => 1,
+      'chunk_sum' => md5('second-chunk'),
+    )));
+
+    $_FILES['file'] = community_test_create_uploaded_chunk('first-chunk');
+    $secondResult = $service->invoke('pwg.images.uploadAsync', $this->buildUploadAsyncParams(array(
+      'chunk' => 0,
+      'chunk_sum' => md5('first-chunk'),
+    )));
+
+    $this->assertSame(array('message' => 'chunks uploaded = 2'), $firstResult);
+    $this->assertSame(array('image_id' => 654, 'message' => 'complete'), $secondResult);
+    $this->assertSame('normal', $user['status']);
+    $this->assertSame(1, $delegateCalls);
+  }
+
+  public function testNonAdminUploadAsyncLifecycleDifferentUserCannotContinueExistingUploadState()
+  {
+    global $user;
+
+    $service = community_test_build_service(
+      'pwg.images.uploadAsync',
+      $this->buildUploadAsyncParams()
+    );
+
+    $delegateCalls = 0;
+    $GLOBALS['community_ws_images_upload_async_delegate'] = function ($forwardedParams) use (&$delegateCalls) {
+      $delegateCalls++;
+
+      return array('image_id' => 654, 'message' => 'complete-'.$forwardedParams['filename']);
+    };
+
+    $_FILES['file'] = community_test_create_uploaded_chunk('first-chunk');
+    $firstResult = $service->invoke('pwg.images.uploadAsync', $this->buildUploadAsyncParams(array(
+      'chunk' => 0,
+      'chunk_sum' => md5('first-chunk'),
+    )));
+
+    $user['id'] = 3;
+    $_SESSION['community_user_id'] = 3;
+    $_FILES['file'] = community_test_create_uploaded_chunk('second-chunk');
+    $otherUserResult = $service->invoke('pwg.images.uploadAsync', $this->buildUploadAsyncParams(array(
+      'chunk' => 1,
+      'chunk_sum' => md5('second-chunk'),
+    )));
+
+    $user['id'] = 2;
+    $_SESSION['community_user_id'] = 2;
+    $_FILES['file'] = community_test_create_uploaded_chunk('second-chunk');
+    $finalResult = $service->invoke('pwg.images.uploadAsync', $this->buildUploadAsyncParams(array(
+      'chunk' => 1,
+      'chunk_sum' => md5('second-chunk'),
+    )));
+
+    $this->assertSame(array('message' => 'chunks uploaded = 1'), $firstResult);
+    $this->assertSame(array('message' => 'chunks uploaded = 2'), $otherUserResult);
+    $this->assertSame(array('image_id' => 654, 'message' => 'complete-upload.jpg'), $finalResult);
+    $this->assertSame(1, $delegateCalls);
+  }
+
+  #[DataProvider('provideUploadAsyncManifestDriftCases')]
+  public function testNonAdminUploadAsyncLifecycleRejectsManifestDriftAcrossChunksBeforeChunkWrite($firstChunkOverrides, $secondChunkOverrides)
+  {
+    $service = community_test_build_service(
+      'pwg.images.uploadAsync',
+      $this->buildUploadAsyncParams($firstChunkOverrides)
+    );
+
+    if (!empty($firstChunkOverrides['image_id']) || !empty($secondChunkOverrides['image_id']))
+    {
+      $GLOBALS['community_test']['fetch_row_returns'] = array(array('1'), array('1'));
+    }
+
+    $delegateCalls = 0;
+    $GLOBALS['community_ws_images_upload_async_delegate'] = function () use (&$delegateCalls) {
+      $delegateCalls++;
+      return array('image_id' => 654, 'message' => 'complete');
+    };
+
+    $_FILES['file'] = community_test_create_uploaded_chunk('first-chunk');
+    $firstResult = $service->invoke('pwg.images.uploadAsync', $this->buildUploadAsyncParams(array_merge(array(
+      'chunk' => 0,
+      'chunk_sum' => md5('first-chunk'),
+    ), $firstChunkOverrides)));
+
+    $paths = $this->getUploadAsyncStatePaths($this->buildUploadAsyncParams($firstChunkOverrides));
+
+    $_FILES['file'] = community_test_create_uploaded_chunk('second-chunk');
+    $secondResult = $service->invoke('pwg.images.uploadAsync', $this->buildUploadAsyncParams(array_merge(array(
+      'chunk' => 1,
+      'chunk_sum' => md5('second-chunk'),
+    ), $secondChunkOverrides)));
+
+    $storedChunks = glob($paths['chunks_dir'].'/*.chunk');
+
+    $this->assertSame(array('message' => 'chunks uploaded = 1'), $firstResult);
+    $this->assertInstanceOf(PwgError::class, $secondResult);
+    $this->assertSame(401, $secondResult->code());
+    $this->assertSame('Access denied', $secondResult->message());
+    $this->assertSame(0, $delegateCalls);
+    $this->assertNotFalse($storedChunks);
+    $this->assertCount(1, $storedChunks);
+  }
+
+  public function testNonAdminUploadAsyncLifecycleRejectsInvalidChunkIndexBeforeChunkWrite()
+  {
+    $service = community_test_build_service(
+      'pwg.images.uploadAsync',
+      $this->buildUploadAsyncParams(array('chunk' => 2))
+    );
+
+    $delegateCalls = 0;
+    $GLOBALS['community_ws_images_upload_async_delegate'] = function () use (&$delegateCalls) {
+      $delegateCalls++;
+      return array('image_id' => 654, 'message' => 'complete');
+    };
+
+    $_FILES['file'] = community_test_create_uploaded_chunk('invalid-index');
+    $result = $service->invoke('pwg.images.uploadAsync', $this->buildUploadAsyncParams(array(
+      'chunk' => 2,
+      'chunk_sum' => md5('invalid-index'),
+    )));
+
+    $this->assertInstanceOf(PwgError::class, $result);
+    $this->assertSame(WS_ERR_INVALID_PARAM, $result->code());
+    $this->assertSame('Invalid chunk index', $result->message());
+    $this->assertSame(0, $delegateCalls);
+    $this->assertFileDoesNotExist($this->getUploadAsyncStatePaths($this->buildUploadAsyncParams())['manifest_file']);
+  }
+
+  public function testNonAdminUploadAsyncLifecycleRejectsExcessiveChunkCountBeforeChunkWrite()
+  {
+    global $conf;
+
+    $service = community_test_build_service(
+      'pwg.images.uploadAsync',
+      $this->buildUploadAsyncParams()
+    );
+
+    $conf['community']['upload_async_max_chunks'] = 1;
+
+    $delegateCalls = 0;
+    $GLOBALS['community_ws_images_upload_async_delegate'] = function () use (&$delegateCalls) {
+      $delegateCalls++;
+      return array('image_id' => 654, 'message' => 'complete');
+    };
+
+    $_FILES['file'] = community_test_create_uploaded_chunk('first-chunk');
+    $result = $service->invoke('pwg.images.uploadAsync', $this->buildUploadAsyncParams(array(
+      'chunk' => 0,
+      'chunk_sum' => md5('first-chunk'),
+    )));
+
+    $this->assertInstanceOf(PwgError::class, $result);
+    $this->assertSame(WS_ERR_INVALID_PARAM, $result->code());
+    $this->assertSame('Too many chunks', $result->message());
+    $this->assertSame(0, $delegateCalls);
+    $this->assertFileDoesNotExist($this->getUploadAsyncStatePaths($this->buildUploadAsyncParams())['manifest_file']);
+  }
+
+  public function testNonAdminUploadAsyncLifecycleRejectsOversizedChunkBeforeChunkWrite()
+  {
+    global $conf;
+
+    $service = community_test_build_service(
+      'pwg.images.uploadAsync',
+      $this->buildUploadAsyncParams(array('chunks' => 1))
+    );
+
+    $conf['upload_form_chunk_size'] = 1;
+
+    $delegateCalls = 0;
+    $GLOBALS['community_ws_images_upload_async_delegate'] = function () use (&$delegateCalls) {
+      $delegateCalls++;
+      return array('image_id' => 654, 'message' => 'complete');
+    };
+
+    $chunkContents = str_repeat('a', 1025);
+    $_FILES['file'] = community_test_create_uploaded_chunk($chunkContents);
+    $result = $service->invoke('pwg.images.uploadAsync', array(
+      'chunk' => 1,
+      'chunk_sum' => md5($chunkContents),
+      'chunks' => 1,
+      'original_sum' => md5($chunkContents),
+      'category' => '1',
+      'filename' => 'upload.jpg',
+    ));
+
+    $this->assertInstanceOf(PwgError::class, $result);
+    $this->assertSame(413, $result->code());
+    $this->assertSame('Uploaded chunk exceeds the configured chunk size limit', $result->message());
+    $this->assertSame(0, $delegateCalls);
+    $this->assertFileDoesNotExist($this->getUploadAsyncStatePaths(array('original_sum' => md5($chunkContents)))['manifest_file']);
+  }
+
+  public function testNonAdminUploadAsyncLifecycleRejectsCumulativeByteOverflowWithoutDoubleCountingStoredChunks()
+  {
+    global $conf;
+
+    $service = community_test_build_service(
+      'pwg.images.uploadAsync',
+      $this->buildUploadAsyncParams(array('original_sum' => md5('123456abcdef')))
+    );
+
+    $conf['community']['upload_async_max_bytes'] = 10;
+
+    $delegateCalls = 0;
+    $GLOBALS['community_ws_images_upload_async_delegate'] = function () use (&$delegateCalls) {
+      $delegateCalls++;
+      return array('image_id' => 654, 'message' => 'complete');
+    };
+
+    $_FILES['file'] = community_test_create_uploaded_chunk('123456');
+    $firstResult = $service->invoke('pwg.images.uploadAsync', $this->buildUploadAsyncParams(array(
+      'chunk' => 0,
+      'chunk_sum' => md5('123456'),
+      'original_sum' => md5('123456abcdef'),
+    )));
+
+    $paths = $this->getUploadAsyncStatePaths($this->buildUploadAsyncParams(array('original_sum' => md5('123456abcdef'))));
+
+    $_FILES['file'] = community_test_create_uploaded_chunk('abcdef');
+    $secondResult = $service->invoke('pwg.images.uploadAsync', $this->buildUploadAsyncParams(array(
+      'chunk' => 1,
+      'chunk_sum' => md5('abcdef'),
+      'original_sum' => md5('123456abcdef'),
+    )));
+
+    $manifest = community_read_json_file($paths['manifest_file']);
+    $storedChunks = glob($paths['chunks_dir'].'/*.chunk');
+
+    $this->assertSame(array('message' => 'chunks uploaded = 1'), $firstResult);
+    $this->assertInstanceOf(PwgError::class, $secondResult);
+    $this->assertSame(413, $secondResult->code());
+    $this->assertSame('Upload exceeds the configured cumulative size limit', $secondResult->message());
+    $this->assertSame(0, $delegateCalls);
+    $this->assertSame(6, $manifest['received_bytes']);
+    $this->assertNotFalse($storedChunks);
+    $this->assertCount(1, $storedChunks);
+  }
+
+  public function testNonAdminUploadAsyncLifecycleTreatsIdenticalChunkRetryAsIdempotent()
+  {
+    $service = community_test_build_service(
+      'pwg.images.uploadAsync',
+      $this->buildUploadAsyncParams()
+    );
+
+    $delegateCalls = 0;
+    $GLOBALS['community_ws_images_upload_async_delegate'] = function () use (&$delegateCalls) {
+      $delegateCalls++;
+      return array('image_id' => 654, 'message' => 'complete');
+    };
+
+    $_FILES['file'] = community_test_create_uploaded_chunk('first-chunk');
+    $firstResult = $service->invoke('pwg.images.uploadAsync', $this->buildUploadAsyncParams(array(
+      'chunk' => 0,
+      'chunk_sum' => md5('first-chunk'),
+    )));
+
+    $paths = $this->getUploadAsyncStatePaths($this->buildUploadAsyncParams());
+
+    $_FILES['file'] = community_test_create_uploaded_chunk('first-chunk');
+    $retryResult = $service->invoke('pwg.images.uploadAsync', $this->buildUploadAsyncParams(array(
+      'chunk' => 0,
+      'chunk_sum' => md5('first-chunk'),
+    )));
+
+    $storedChunks = glob($paths['chunks_dir'].'/*.chunk');
+    $manifest = community_read_json_file($paths['manifest_file']);
+
+    $this->assertSame(array('message' => 'chunks uploaded = 1'), $firstResult);
+    $this->assertSame(array('message' => 'chunks uploaded = 1'), $retryResult);
+    $this->assertSame(0, $delegateCalls);
+    $this->assertNotFalse($storedChunks);
+    $this->assertCount(1, $storedChunks);
+    $this->assertSame(strlen('first-chunk'), $manifest['received_bytes']);
+  }
+
+  public function testNonAdminUploadAsyncLifecycleRejectsConflictingChunkRetry()
+  {
+    $service = community_test_build_service(
+      'pwg.images.uploadAsync',
+      $this->buildUploadAsyncParams()
+    );
+
+    $delegateCalls = 0;
+    $GLOBALS['community_ws_images_upload_async_delegate'] = function () use (&$delegateCalls) {
+      $delegateCalls++;
+      return array('image_id' => 654, 'message' => 'complete');
+    };
+
+    $_FILES['file'] = community_test_create_uploaded_chunk('first-chunk');
+    $firstResult = $service->invoke('pwg.images.uploadAsync', $this->buildUploadAsyncParams(array(
+      'chunk' => 0,
+      'chunk_sum' => md5('first-chunk'),
+    )));
+
+    $paths = $this->getUploadAsyncStatePaths($this->buildUploadAsyncParams());
+
+    $_FILES['file'] = community_test_create_uploaded_chunk('other-first');
+    $retryResult = $service->invoke('pwg.images.uploadAsync', $this->buildUploadAsyncParams(array(
+      'chunk' => 0,
+      'chunk_sum' => md5('other-first'),
+    )));
+
+    $storedChunks = glob($paths['chunks_dir'].'/*.chunk');
+
+    $this->assertSame(array('message' => 'chunks uploaded = 1'), $firstResult);
+    $this->assertInstanceOf(PwgError::class, $retryResult);
+    $this->assertSame(409, $retryResult->code());
+    $this->assertSame('Chunk retry conflicts with the existing upload state', $retryResult->message());
+    $this->assertSame(0, $delegateCalls);
+    $this->assertNotFalse($storedChunks);
+    $this->assertCount(1, $storedChunks);
+  }
+
+  public function testNonAdminUploadAsyncLifecycleReturnsReceiptForSuccessfulRetryWithoutSecondDelegateCall()
+  {
+    $chunkContents = 'single-chunk';
+    $params = array(
+      'chunk' => 1,
+      'chunk_sum' => md5($chunkContents),
+      'chunks' => 1,
+      'original_sum' => md5($chunkContents),
+      'category' => '1',
+      'filename' => 'upload.jpg',
+      'name' => 'Title',
+      'author' => 'Author',
+      'comment' => 'Comment',
+      'date_creation' => '2024-01-01',
+      'level' => 8,
+      'tag_ids' => '4,5',
+    );
+
+    $service = community_test_build_service('pwg.images.uploadAsync', $params);
+
+    $delegateCalls = 0;
+    $GLOBALS['community_ws_images_upload_async_delegate'] = function ($forwardedParams) use (&$delegateCalls) {
+      $delegateCalls++;
+      return array(
+        'image_id' => 700,
+        'message' => sprintf(
+          '%s|%s|%s|%s|%s|%d|%s',
+          $forwardedParams['filename'],
+          $forwardedParams['name'],
+          $forwardedParams['author'],
+          $forwardedParams['comment'],
+          $forwardedParams['date_creation'],
+          $forwardedParams['level'],
+          $forwardedParams['tag_ids']
+        ),
+      );
+    };
+
+    $_FILES['file'] = community_test_create_uploaded_chunk($chunkContents);
+    $firstResult = $service->invoke('pwg.images.uploadAsync', $params);
+
+    $_FILES['file'] = community_test_create_uploaded_chunk($chunkContents);
+    $retryResult = $service->invoke('pwg.images.uploadAsync', $params);
+
+    $paths = $this->getUploadAsyncStatePaths($params);
+
+    $this->assertSame($firstResult, $retryResult);
+    $this->assertSame(1, $delegateCalls);
+    $this->assertFileDoesNotExist($paths['manifest_file']);
+    $this->assertFileDoesNotExist($paths['chunks_dir']);
+    $this->assertFileExists($paths['receipt_file']);
+  }
+
+  public function testNonAdminUploadAsyncLifecycleExpiresStateAndCleansOnlyExactArtifacts()
+  {
+    $service = community_test_build_service(
+      'pwg.images.uploadAsync',
+      $this->buildUploadAsyncParams()
+    );
+
+    $delegateCalls = 0;
+    $GLOBALS['community_ws_images_upload_async_delegate'] = function () use (&$delegateCalls) {
+      $delegateCalls++;
+      return array('image_id' => 654, 'message' => 'complete');
+    };
+
+    $_FILES['file'] = community_test_create_uploaded_chunk('first-chunk');
+    $firstResult = $service->invoke('pwg.images.uploadAsync', $this->buildUploadAsyncParams(array(
+      'chunk' => 0,
+      'chunk_sum' => md5('first-chunk'),
+    )));
+
+    $paths = $this->getUploadAsyncStatePaths($this->buildUploadAsyncParams());
+    $manifest = community_read_json_file($paths['manifest_file']);
+    $manifest['expires_at'] = time() - 1;
+    community_write_json_file($paths['manifest_file'], $manifest);
+
+    $corePrefix = '/tmp/community-upload-tests/buffer/'.$manifest['original_sum'].'-u'.$manifest['user_id'];
+    $exactCoreChunk = sprintf('%s-%03uof%03u.chunk', $corePrefix, 1, $manifest['chunks']);
+    $exactCoreMerged = $corePrefix.'.merged';
+    $unrelatedCoreChunk = sprintf('%s-%03uof%03u.chunk', $corePrefix, 1, $manifest['chunks'] + 1);
+    $unrelatedStateFile = '/tmp/community-upload-tests/buffer/community-upload-async/unrelated/keep.txt';
+
+    if (!is_dir(dirname($exactCoreChunk)))
+    {
+      mkdir(dirname($exactCoreChunk), 0777, true);
+    }
+    if (!is_dir(dirname($unrelatedStateFile)))
+    {
+      mkdir(dirname($unrelatedStateFile), 0777, true);
+    }
+
+    file_put_contents($exactCoreChunk, 'core-chunk');
+    file_put_contents($exactCoreMerged, 'core-merged');
+    file_put_contents($unrelatedCoreChunk, 'keep');
+    file_put_contents($unrelatedStateFile, 'keep');
+
+    $_FILES['file'] = community_test_create_uploaded_chunk('second-chunk');
+    $expiredResult = $service->invoke('pwg.images.uploadAsync', $this->buildUploadAsyncParams(array(
+      'chunk' => 1,
+      'chunk_sum' => md5('second-chunk'),
+    )));
+
+    $this->assertSame(array('message' => 'chunks uploaded = 1'), $firstResult);
+    $this->assertInstanceOf(PwgError::class, $expiredResult);
+    $this->assertSame(410, $expiredResult->code());
+    $this->assertSame('Upload expired', $expiredResult->message());
+    $this->assertSame(0, $delegateCalls);
+    $this->assertFileDoesNotExist($paths['manifest_file']);
+    $this->assertFileDoesNotExist($paths['chunks_dir']);
+    $this->assertFileDoesNotExist($exactCoreChunk);
+    $this->assertFileDoesNotExist($exactCoreMerged);
+    $this->assertFileExists($unrelatedCoreChunk);
+    $this->assertFileExists($unrelatedStateFile);
+  }
+
+  public function testNonAdminUploadAsyncLifecycleRevokedOwnershipBlocksFinalPersistence()
+  {
+    $service = community_test_build_service(
+      'pwg.images.uploadAsync',
+      $this->buildUploadAsyncParams(array('image_id' => 77))
+    );
+
+    $GLOBALS['community_test']['fetch_row_returns'] = array(
+      array('1'),
+      array('0'),
+    );
+
+    $delegateCalls = 0;
+    $GLOBALS['community_ws_images_upload_async_delegate'] = function () use (&$delegateCalls) {
+      $delegateCalls++;
+      return array('image_id' => 77, 'message' => 'complete');
+    };
+
+    $_FILES['file'] = community_test_create_uploaded_chunk('first-chunk');
+    $firstResult = $service->invoke('pwg.images.uploadAsync', $this->buildUploadAsyncParams(array(
+      'chunk' => 0,
+      'chunk_sum' => md5('first-chunk'),
+      'image_id' => 77,
+    )));
+
+    $_FILES['file'] = community_test_create_uploaded_chunk('second-chunk');
+    $secondResult = $service->invoke('pwg.images.uploadAsync', $this->buildUploadAsyncParams(array(
+      'chunk' => 1,
+      'chunk_sum' => md5('second-chunk'),
+      'image_id' => 77,
+    )));
+
+    $this->assertSame(array('message' => 'chunks uploaded = 1'), $firstResult);
+    $this->assertInstanceOf(PwgError::class, $secondResult);
+    $this->assertSame(401, $secondResult->code());
+    $this->assertSame('Access denied', $secondResult->message());
+    $this->assertSame(0, $delegateCalls);
   }
 
   public function testNonAdminUploadLifecycleAuthorizedSingleCategoryDelegatesOnceWithoutStatusElevation()
@@ -1102,6 +1660,34 @@ class OriginalSumGuardTest extends TestCase
     $this->assertSame('AaBbCcDd00112233445566778899EeFf', $community['md5sum']);
   }
 
+  private function buildUploadAsyncParams($overrides = array())
+  {
+    return array_merge(
+      array(
+        'chunk' => 0,
+        'chunk_sum' => md5('first-chunk'),
+        'chunks' => 2,
+        'original_sum' => md5('first-chunksecond-chunk'),
+        'category' => '1',
+        'filename' => 'upload.jpg',
+      ),
+      $overrides
+    );
+  }
+
+  private function getUploadAsyncStatePaths($params)
+  {
+    global $user;
+
+    $params = array_merge($this->buildUploadAsyncParams(), $params);
+
+    return community_get_upload_async_state_paths(
+      $params['original_sum'],
+      isset($params['user_id']) ? $params['user_id'] : $user['id'],
+      array_key_exists('session_id', $params) ? $params['session_id'] : community_get_upload_async_session_identity()
+    );
+  }
+
   public static function provideInvalidChecksums()
   {
     return array(
@@ -1113,6 +1699,21 @@ class OriginalSumGuardTest extends TestCase
       'too short' => array('abcd1234'),
       'too long' => array('abcd1234abcd1234abcd1234abcd123400'),
       'non hex' => array('zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz'),
+    );
+  }
+
+  public static function provideUploadAsyncManifestDriftCases()
+  {
+    return array(
+      'chunk count drift' => array(array(), array('chunks' => 3)),
+      'image_id drift' => array(array('image_id' => 77), array('image_id' => 78)),
+      'filename drift' => array(array(), array('filename' => 'other.jpg')),
+      'name drift' => array(array('name' => 'Title'), array('name' => 'Other title')),
+      'author drift' => array(array('author' => 'Alice'), array('author' => 'Bob')),
+      'comment drift' => array(array('comment' => 'First'), array('comment' => 'Second')),
+      'date drift' => array(array('date_creation' => '2024-01-01'), array('date_creation' => '2024-01-02')),
+      'level drift' => array(array('level' => 2), array('level' => 4)),
+      'tag_ids drift' => array(array('tag_ids' => '4,5'), array('tag_ids' => '4,6')),
     );
   }
 

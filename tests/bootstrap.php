@@ -341,9 +341,73 @@ function ws_images_uploadAsync($params, $service)
   );
 }
 
+function community_test_create_uploaded_chunk($contents, $filename = 'chunk.bin')
+{
+  $temp_path = tempnam(sys_get_temp_dir(), 'community-upload-async-');
+  file_put_contents($temp_path, $contents);
+  $size = filesize($temp_path);
+
+  if (!isset($GLOBALS['community_test']['temporary_files']))
+  {
+    $GLOBALS['community_test']['temporary_files'] = array();
+  }
+
+  $GLOBALS['community_test']['temporary_files'][] = $temp_path;
+
+  return array(
+    'tmp_name' => $temp_path,
+    'name' => $filename,
+    'size' => false === $size ? strlen($contents) : $size,
+    'error' => 0,
+    'type' => 'application/octet-stream',
+  );
+}
+
+function community_test_delete_path($path)
+{
+  if (is_dir($path) && !is_link($path))
+  {
+    $entries = scandir($path);
+    if (false !== $entries)
+    {
+      foreach ($entries as $entry)
+      {
+        if ('.' === $entry || '..' === $entry)
+        {
+          continue;
+        }
+
+        community_test_delete_path($path.'/'.$entry);
+      }
+    }
+
+    return @rmdir($path);
+  }
+
+  if (file_exists($path) || is_link($path))
+  {
+    return @unlink($path);
+  }
+
+  return true;
+}
+
 function community_test_reset_runtime()
 {
   global $conf, $user, $community;
+
+  if (!empty($GLOBALS['community_test']['temporary_files']))
+  {
+    foreach ($GLOBALS['community_test']['temporary_files'] as $temporary_file)
+    {
+      if (is_string($temporary_file) && file_exists($temporary_file))
+      {
+        @unlink($temporary_file);
+      }
+    }
+  }
+
+  community_test_delete_path('/tmp/community-upload-tests/buffer/community-upload-async');
 
   if (session_status() !== PHP_SESSION_ACTIVE)
   {
@@ -366,6 +430,7 @@ function community_test_reset_runtime()
     'metadata_sync_calls' => array(),
     'picture_urls' => array(),
     'invalidate_user_cache_calls' => 0,
+    'temporary_files' => array(),
   );
 
   unset(
