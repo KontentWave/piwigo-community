@@ -84,6 +84,21 @@ function community_call_ws_images_upload($params, $service)
   return ws_images_upload($params, $service);
 }
 
+function community_call_ws_images_upload_async($params, $service)
+{
+  if (isset($GLOBALS['community_ws_images_upload_async_delegate']))
+  {
+    return call_user_func($GLOBALS['community_ws_images_upload_async_delegate'], $params, $service);
+  }
+
+  if (!function_exists('ws_images_uploadAsync'))
+  {
+    include_once(PHPWG_ROOT_PATH.'include/ws_functions/pwg.images.php');
+  }
+
+  return ws_images_uploadAsync($params, $service);
+}
+
 function community_access_denied_error()
 {
   return new PwgError(401, 'Access denied');
@@ -260,6 +275,35 @@ function community_ws_images_upload($params, $service)
   if (!($result instanceof PwgError))
   {
     $community['method'] = 'pwg.images.upload';
+    $community['category'] = $authorized_categories[0];
+  }
+
+  return $result;
+}
+
+function community_ws_images_upload_async($params, $service)
+{
+  global $community;
+
+  $authorized_categories = community_authorize_upload_categories(
+    isset($params['category']) ? $params['category'] : null
+  );
+  if (empty($authorized_categories))
+  {
+    return community_access_denied_error();
+  }
+
+  $params['category'] = $authorized_categories;
+
+  if (!empty($params['image_id']) and !community_user_can_mutate_uploaded_image($params['image_id']))
+  {
+    return community_access_denied_error();
+  }
+
+  $result = community_call_ws_images_upload_async($params, $service);
+  if (!($result instanceof PwgError))
+  {
+    $community['method'] = 'pwg.images.uploadAsync';
     $community['category'] = $authorized_categories[0];
   }
 

@@ -23,6 +23,7 @@ class OriginalSumGuardTest extends TestCase
     $addMethod = community_test_get_registered_method($service, 'pwg.images.add');
     $chunkMethod = community_test_get_registered_method($service, 'pwg.images.addChunk');
     $uploadMethod = community_test_get_registered_method($service, 'pwg.images.upload');
+    $uploadAsyncMethod = community_test_get_registered_method($service, 'pwg.images.uploadAsync');
 
     $this->assertSame('community_ws_images_add_simple', $addSimpleMethod['callback']);
     $this->assertSame(array('post_only' => true), $addSimpleMethod['options']);
@@ -30,8 +31,181 @@ class OriginalSumGuardTest extends TestCase
     $this->assertSame('community_ws_images_add_chunk', $chunkMethod['callback']);
     $this->assertSame('community_ws_images_upload', $uploadMethod['callback']);
     $this->assertSame(array('post_only' => true), $uploadMethod['options']);
+    $this->assertSame('community_ws_images_upload_async', $uploadAsyncMethod['callback']);
+    $this->assertSame(array('post_only' => true), $uploadAsyncMethod['options']);
     $this->assertSame(array('admin_only' => true), $addMethod['options']);
     $this->assertSame(array('admin_only' => true, 'post_only' => true), $chunkMethod['options']);
+  }
+
+  public function testNonAdminUploadAsyncLifecycleAuthorizedSingleCategoryDelegatesOnceWithoutStatusElevation()
+  {
+    global $user;
+
+    $service = community_test_build_service(
+      'pwg.images.uploadAsync',
+      array(
+        'chunk' => 1,
+        'chunk_sum' => 'AaBbCcDd00112233445566778899EeFf',
+        'chunks' => 1,
+        'original_sum' => 'AaBbCcDd00112233445566778899EeFf',
+        'category' => '1',
+        'filename' => 'upload.jpg',
+      )
+    );
+
+    $delegateCalls = 0;
+    $statusBefore = $user['status'];
+    $GLOBALS['community_ws_images_upload_async_delegate'] = function ($forwardedParams, $forwardedService) use (&$delegateCalls, &$user, $service, $statusBefore) {
+      $delegateCalls++;
+      TestCase::assertSame('normal', $user['status']);
+      TestCase::assertSame($statusBefore, $user['status']);
+      TestCase::assertSame(array(1), $forwardedParams['category']);
+      TestCase::assertSame('upload.jpg', $forwardedParams['filename']);
+      TestCase::assertSame($service, $forwardedService);
+
+      return array('image_id' => 654, 'message' => 'chunks uploaded = 1');
+    };
+
+    $result = $service->invoke('pwg.images.uploadAsync', array(
+      'chunk' => 1,
+      'chunk_sum' => 'AaBbCcDd00112233445566778899EeFf',
+      'chunks' => 1,
+      'original_sum' => 'AaBbCcDd00112233445566778899EeFf',
+      'category' => '1',
+      'filename' => 'upload.jpg',
+    ));
+
+    $this->assertSame(array('image_id' => 654, 'message' => 'chunks uploaded = 1'), $result);
+    $this->assertSame('normal', $user['status']);
+    $this->assertSame(1, $delegateCalls);
+  }
+
+  public function testNonAdminUploadAsyncLifecycleRejectsUnauthorizedCategoryWithoutDelegateCall()
+  {
+    $service = community_test_build_service(
+      'pwg.images.uploadAsync',
+      array(
+        'chunk' => 1,
+        'chunk_sum' => 'AaBbCcDd00112233445566778899EeFf',
+        'chunks' => 1,
+        'original_sum' => 'AaBbCcDd00112233445566778899EeFf',
+        'category' => '1',
+        'filename' => 'upload.jpg',
+      )
+    );
+
+    $delegateCalls = 0;
+    $GLOBALS['community_ws_images_upload_async_delegate'] = function () use (&$delegateCalls) {
+      $delegateCalls++;
+      return array('image_id' => 654, 'message' => 'chunks uploaded = 1');
+    };
+
+    $result = $service->invoke('pwg.images.uploadAsync', array(
+      'chunk' => 1,
+      'chunk_sum' => 'AaBbCcDd00112233445566778899EeFf',
+      'chunks' => 1,
+      'original_sum' => 'AaBbCcDd00112233445566778899EeFf',
+      'category' => '2',
+      'filename' => 'upload.jpg',
+    ));
+
+    $this->assertInstanceOf(PwgError::class, $result);
+    $this->assertSame(401, $result->code());
+    $this->assertSame('Access denied', $result->message());
+    $this->assertSame(0, $delegateCalls);
+  }
+
+  public function testNonAdminUploadAsyncLifecycleAllowsReplacementOfOwnersOwnImage()
+  {
+    global $user;
+
+    $service = community_test_build_service(
+      'pwg.images.uploadAsync',
+      array(
+        'chunk' => 1,
+        'chunk_sum' => 'AaBbCcDd00112233445566778899EeFf',
+        'chunks' => 1,
+        'original_sum' => 'AaBbCcDd00112233445566778899EeFf',
+        'category' => '1',
+        'filename' => 'upload.jpg',
+        'image_id' => 77,
+      )
+    );
+
+    $delegateCalls = 0;
+    $statusBefore = $user['status'];
+    $GLOBALS['community_test']['fetch_row_return'] = array('1');
+    $GLOBALS['community_ws_images_upload_async_delegate'] = function ($forwardedParams, $forwardedService) use (&$delegateCalls, &$user, $service, $statusBefore) {
+      $delegateCalls++;
+      TestCase::assertSame('normal', $user['status']);
+      TestCase::assertSame($statusBefore, $user['status']);
+      TestCase::assertSame(77, $forwardedParams['image_id']);
+      TestCase::assertSame(array(1), $forwardedParams['category']);
+      TestCase::assertSame($service, $forwardedService);
+
+      return array('image_id' => 77, 'message' => 'chunks uploaded = 1');
+    };
+
+    $result = $service->invoke('pwg.images.uploadAsync', array(
+      'chunk' => 1,
+      'chunk_sum' => 'AaBbCcDd00112233445566778899EeFf',
+      'chunks' => 1,
+      'original_sum' => 'AaBbCcDd00112233445566778899EeFf',
+      'category' => '1',
+      'filename' => 'upload.jpg',
+      'image_id' => 77,
+    ));
+
+    $this->assertSame(array('image_id' => 77, 'message' => 'chunks uploaded = 1'), $result);
+    $this->assertSame(1, $delegateCalls);
+    $this->assertStringContainsString('WHERE id = 77', $GLOBALS['community_test']['queries'][0]);
+    $this->assertStringContainsString('added_by` = 2', $GLOBALS['community_test']['queries'][0]);
+  }
+
+  public function testGenericUserUploadAsyncLifecycleLimitsReplacementToCurrentSession()
+  {
+    global $user;
+
+    $service = community_test_build_service(
+      'pwg.images.uploadAsync',
+      array(
+        'chunk' => 1,
+        'chunk_sum' => 'AaBbCcDd00112233445566778899EeFf',
+        'chunks' => 1,
+        'original_sum' => 'AaBbCcDd00112233445566778899EeFf',
+        'category' => '1',
+        'filename' => 'upload.jpg',
+        'image_id' => 77,
+      )
+    );
+
+    $user['status'] = 'generic';
+    $delegateCalls = 0;
+    $GLOBALS['community_test']['fetch_row_returns'] = array(
+      array('1'),
+      array('0'),
+    );
+    $GLOBALS['community_ws_images_upload_async_delegate'] = function () use (&$delegateCalls) {
+      $delegateCalls++;
+      return array('image_id' => 77, 'message' => 'chunks uploaded = 1');
+    };
+
+    $result = $service->invoke('pwg.images.uploadAsync', array(
+      'chunk' => 1,
+      'chunk_sum' => 'AaBbCcDd00112233445566778899EeFf',
+      'chunks' => 1,
+      'original_sum' => 'AaBbCcDd00112233445566778899EeFf',
+      'category' => '1',
+      'filename' => 'upload.jpg',
+      'image_id' => 77,
+    ));
+
+    $this->assertInstanceOf(PwgError::class, $result);
+    $this->assertSame(401, $result->code());
+    $this->assertSame('Access denied', $result->message());
+    $this->assertSame(0, $delegateCalls);
+    $this->assertCount(2, $GLOBALS['community_test']['queries']);
+    $this->assertStringContainsString('session_idx', $GLOBALS['community_test']['queries'][1]);
   }
 
   public function testNonAdminUploadLifecycleAuthorizedSingleCategoryDelegatesOnceWithoutStatusElevation()
@@ -810,13 +984,16 @@ class OriginalSumGuardTest extends TestCase
     $addMethod = community_test_get_registered_method($service, 'pwg.images.add');
     $chunkMethod = community_test_get_registered_method($service, 'pwg.images.addChunk');
     $uploadMethod = community_test_get_registered_method($service, 'pwg.images.upload');
+    $uploadAsyncMethod = community_test_get_registered_method($service, 'pwg.images.uploadAsync');
 
     $this->assertSame('ws_images_addSimple', $addSimpleMethod['callback']);
     $this->assertSame(array('admin_only' => true, 'post_only' => true), $addSimpleMethod['options']);
     $this->assertSame('ws_images_add', $addMethod['callback']);
     $this->assertSame('ws_images_add_chunk', $chunkMethod['callback']);
     $this->assertSame('ws_images_upload', $uploadMethod['callback']);
+    $this->assertSame('ws_images_uploadAsync', $uploadAsyncMethod['callback']);
     $this->assertSame(array('admin_only' => true, 'post_only' => true), $uploadMethod['options']);
+    $this->assertSame(array('admin_only' => true, 'post_only' => true), $uploadAsyncMethod['options']);
     $this->assertSame(array('admin_only' => true), $addMethod['options']);
     $this->assertSame(array('admin_only' => true, 'post_only' => true), $chunkMethod['options']);
   }
@@ -854,6 +1031,28 @@ class OriginalSumGuardTest extends TestCase
     $method = community_test_get_registered_method($service, 'pwg.images.upload');
 
     $this->assertSame('ws_images_upload', $method['callback']);
+    $this->assertSame(array('admin_only' => true, 'post_only' => true), $method['options']);
+  }
+
+  public function testUploadAsyncLifecycleFakedByCommunityFalseKeepsExistingBehavior()
+  {
+    $_REQUEST['faked_by_community'] = 'false';
+    $service = community_test_build_service(
+      'pwg.images.uploadAsync',
+      array(
+        'chunk' => 1,
+        'chunk_sum' => 'AaBbCcDd00112233445566778899EeFf',
+        'chunks' => 1,
+        'original_sum' => 'AaBbCcDd00112233445566778899EeFf',
+        'category' => '1',
+        'filename' => 'upload.jpg',
+        'faked_by_community' => 'false',
+      )
+    );
+
+    $method = community_test_get_registered_method($service, 'pwg.images.uploadAsync');
+
+    $this->assertSame('ws_images_uploadAsync', $method['callback']);
     $this->assertSame(array('admin_only' => true, 'post_only' => true), $method['options']);
   }
 

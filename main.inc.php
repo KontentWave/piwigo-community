@@ -321,11 +321,7 @@ function community_switch_user_to_admin($arr)
   
   $community = array('method' => $_REQUEST['method']);
 
-  if ('pwg.images.uploadAsync' == $community['method'])
-  {
-    $community['category'] = $_REQUEST['category'];
-  }
-  elseif ('pwg.images.add' == $community['method'])
+  if ('pwg.images.add' == $community['method'])
   {
     $community['category'] = $_REQUEST['categories'];
     community_capture_original_sum_from_request($community, $_REQUEST);
@@ -386,7 +382,6 @@ function community_switch_user_to_admin($arr)
   $methods[] = 'pwg.images.checkFiles';
   $methods[] = 'pwg.session.getStatus';
   $methods[] = 'pwg.images.uploadCompleted';
-  $methods[] = 'pwg.images.uploadAsync';
 
   if (in_array($community['method'], array('pwg.images.delete', 'pwg.images.setInfo')))
   {
@@ -657,6 +652,43 @@ function community_ws_replace_methods($arr)
     'Add an image.
 <br>Use the <b>$_FILES[image]</b> field for uploading file.
 <br>Set the form encoding to "form-data".',
+    null,
+    array('post_only' => true)
+    );
+
+  $service->addMethod(
+    'pwg.images.uploadAsync',
+    'community_ws_images_upload_async',
+    array(
+      'chunk' => array('type' => WS_TYPE_INT | WS_TYPE_POSITIVE),
+      'chunk_sum' => array(),
+      'chunks' => array('type' => WS_TYPE_INT | WS_TYPE_POSITIVE),
+      'original_sum' => array(),
+      'category' => array(
+        'default' => null,
+        'flags' => WS_PARAM_FORCE_ARRAY,
+        'type' => WS_TYPE_ID,
+      ),
+      'filename' => array(),
+      'name' => array('default' => null),
+      'author' => array('default' => null),
+      'comment' => array('default' => null),
+      'date_creation' => array('default' => null),
+      'level' => array(
+        'default' => 0,
+        'maxValue' => max($conf['available_permission_levels']),
+        'type' => WS_TYPE_INT | WS_TYPE_POSITIVE,
+      ),
+      'tag_ids' => array(
+        'default' => null,
+        'info' => 'Comma separated ids',
+      ),
+      'image_id' => array(
+        'default' => null,
+        'type' => WS_TYPE_ID,
+      ),
+    ),
+    'Add a chunk of an image and merge it when all chunks are uploaded.',
     null,
     array('post_only' => true)
     );

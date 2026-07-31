@@ -328,6 +328,19 @@ function ws_images_upload($params, $service)
   );
 }
 
+function ws_images_uploadAsync($params, $service)
+{
+  if (isset($GLOBALS['community_ws_images_upload_async_delegate']))
+  {
+    return call_user_func($GLOBALS['community_ws_images_upload_async_delegate'], $params, $service);
+  }
+
+  return array(
+    'image_id' => !empty($params['image_id']) ? $params['image_id'] : 654,
+    'message' => 'chunks uploaded = 1',
+  );
+}
+
 function community_test_reset_runtime()
 {
   global $conf, $user, $community;
@@ -359,7 +372,8 @@ function community_test_reset_runtime()
     $GLOBALS['community_ws_images_add_delegate'],
     $GLOBALS['community_ws_images_add_chunk_delegate'],
     $GLOBALS['community_ws_images_add_simple_delegate'],
-    $GLOBALS['community_ws_images_upload_delegate']
+    $GLOBALS['community_ws_images_upload_delegate'],
+    $GLOBALS['community_ws_images_upload_async_delegate']
   );
 
   $_GET = array();
@@ -511,6 +525,43 @@ function community_test_register_core_upload_methods($arr)
       'pwg_token' => array(),
     ),
     "Add an image.\n<br>Use the <b>\$_FILES[image]</b> field for uploading file.\n<br>Set the form encoding to \"form-data\".",
+    null,
+    array('admin_only' => true, 'post_only' => true)
+  );
+
+  $service->addMethod(
+    'pwg.images.uploadAsync',
+    'ws_images_uploadAsync',
+    array(
+      'chunk' => array('type' => WS_TYPE_INT | WS_TYPE_POSITIVE),
+      'chunk_sum' => array(),
+      'chunks' => array('type' => WS_TYPE_INT | WS_TYPE_POSITIVE),
+      'original_sum' => array(),
+      'category' => array(
+        'default' => null,
+        'flags' => WS_PARAM_FORCE_ARRAY,
+        'type' => WS_TYPE_ID,
+      ),
+      'filename' => array(),
+      'name' => array('default' => null),
+      'author' => array('default' => null),
+      'comment' => array('default' => null),
+      'date_creation' => array('default' => null),
+      'level' => array(
+        'default' => 0,
+        'maxValue' => max($conf['available_permission_levels']),
+        'type' => WS_TYPE_INT | WS_TYPE_POSITIVE,
+      ),
+      'tag_ids' => array(
+        'default' => null,
+        'info' => 'Comma separated ids',
+      ),
+      'image_id' => array(
+        'default' => null,
+        'type' => WS_TYPE_ID,
+      ),
+    ),
+    "Add a chunk of an image and merge it when all chunks are uploaded.",
     null,
     array('admin_only' => true, 'post_only' => true)
   );
