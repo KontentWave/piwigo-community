@@ -40,16 +40,6 @@ function community_init()
 {
   global $conf, $user, $page;
 
-  // in Batch Manager Unit, in case an admin save photo properties, if level 16 does
-  // not exist, Piwigo will downgrade it to 8 (Admins) which is not the intended plan.
-  //
-  // admin.picture_modify handles the "save properties" form on its own and has no
-  // such check
-  if (isset($_REQUEST['method']) and 'pwg.images.setInfo' == $_REQUEST['method'])
-  {
-    $conf['available_permission_levels'][] = 16;
-  }
-
   // prepare plugin configuration
   $conf['community'] = safe_unserialize($conf['community']);
 
@@ -310,7 +300,7 @@ SELECT
 add_event_handler('ws_add_methods', 'community_switch_user_to_admin', EVENT_HANDLER_PRIORITY_NEUTRAL+5);
 function community_switch_user_to_admin($arr)
 {
-  global $user, $community, $conf;
+  global $user, $community;
 
   $service = &$arr[0];
 
@@ -325,31 +315,6 @@ function community_switch_user_to_admin($arr)
   {
     $community['category'] = $_REQUEST['categories'];
     community_capture_original_sum_from_request($community, $_REQUEST);
-  }
-
-  if ('pwg.images.setInfo' == $community['method'])
-  {
-    // prevent Community users to validate photos with setting level to 0
-    unset($_POST['level']);
-
-    // prevent HTML in photo properties
-    $infos = array(
-      'name',
-      'author',
-      'comment',
-      'date_creation',
-      );
-
-    foreach ($infos as $info)
-    {
-      if (isset($_POST[$info]))
-      {
-        $_POST[$info] = strip_tags($_POST[$info], '<b><strong><em><i>');
-      }
-    }
-
-    // security level 2 : deactivate HTML description
-    $conf['allow_html_descriptions'] = false;
   }
 
   // $print_params = $params;
@@ -379,60 +344,6 @@ function community_switch_user_to_admin($arr)
   $methods[] = 'pwg.images.checkUpload';
   $methods[] = 'pwg.images.checkFiles';
   $methods[] = 'pwg.session.getStatus';
-
-  if (in_array($community['method'], array('pwg.images.delete', 'pwg.images.setInfo')))
-  {
-    $image_ids = $_POST['image_id'];
-    if (!is_array($image_ids))
-    {
-      $image_ids = preg_split(
-        '/[\s,;\|]/',
-        $_POST['image_id'],
-        -1,
-        PREG_SPLIT_NO_EMPTY
-      );
-    }
-
-    $image_ids = array_map('intval', $image_ids);
-
-    $query = '
-SELECT
-    `id`
-  FROM '.IMAGES_TABLE.'
-  WHERE `added_by` = '.$user['id'].'
-    AND `id` IN ('.join(',', $image_ids).')
-;';
-    $image_ids = query2array($query, null, 'id');
-
-    if (!is_autorize_status(ACCESS_CLASSIC))
-    {
-      // in this specific case (ie a user with status guest/generic) we only allow the user
-      // to edit/delete photos if they were added in the current session
-      if (version_compare(PHPWG_VERSION, '2.10', '>='))
-      {
-        $query = '
-SELECT
-    `object_id`
-  FROM '.ACTIVITY_TABLE.'
-  WHERE `object` = \'photo\'
-    AND `action` = \'add\'
-    AND `object_id` IN ('.join(',', $image_ids).')
-    AND `session_idx` = \''.session_id().'\'
-;';
-        $image_ids = query2array($query, null, 'object_id');
-      }
-      else
-      {
-        $image_ids = array();
-      }
-    }
-
-    if (count($image_ids) > 0)
-    {
-      $_POST['image_id'] = join(',', $image_ids);
-      $methods[] = $community['method'];
-    }
-  }
 
   if (in_array($community['method'], $methods))
   {
@@ -513,6 +424,48 @@ function community_ws_replace_methods($arr)
   {
     return;
   }
+
+  $service->addMethod(
+    'pwg.images.delete',
+    'community_ws_images_delete',
+    array(
+      'image_id' => array('flags'=>WS_PARAM_ACCEPT_ARRAY),
+      'pwg_token' => array(),
+      ),
+    'Deletes image(s).',
+    null,
+    array('post_only'=>true)
+    );
+
+  $service->addMethod(
+    'pwg.images.setInfo',
+    'community_ws_images_set_info',
+    array(
+      'image_id' =>       array('type'=>WS_TYPE_ID),
+      'file' =>           array('default'=>null),
+      'name' =>           array('default'=>null),
+      'author' =>         array('default'=>null),
+      'date_creation' =>  array('default'=>null),
+      'comment' =>        array('default'=>null),
+      'categories' =>     array('default'=>null,
+                                'info'=>'String list "category_id[,rank];category_id[,rank]".<br>The rank is optional and is equivalent to "auto" if not given.'),
+      'tag_ids' =>        array('default'=>null,
+                                'info'=>'Comma separated ids'),
+      'level' =>          array('default'=>null,
+                                'maxValue'=>max($conf['available_permission_levels']),
+                                'type'=>WS_TYPE_INT|WS_TYPE_POSITIVE),
+      'single_value_mode' =>    array('default'=>'fill_if_empty'),
+      'multiple_value_mode' =>  array('default'=>'append'),
+      'pwg_token' => array('flags'=>WS_PARAM_OPTIONAL),
+      ),
+    'Changes properties of an image.
+<br><b>single_value_mode</b> can be "fill_if_empty" (only use the input value if the corresponding values is currently empty) or "replace"
+(overwrite any existing value) and applies to single values properties like name/author/date_creation/comment.
+<br><b>multiple_value_mode</b> can be "append" (no change on existing values, add the new values) or "replace" and applies to multiple values properties like tag_ids/categories.
+<br><b>pwg_token</b> required if you want to use HTML in name/comment/author.',
+    null,
+    array('post_only'=>true)
+    );
 
   $service->addMethod(
     'pwg.images.uploadCompleted',

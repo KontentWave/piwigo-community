@@ -7,6 +7,7 @@ define('IMAGE_CATEGORY_TABLE', 'piwigo_image_category');
 define('IMAGES_TABLE', 'piwigo_images');
 define('ACTIVITY_TABLE', 'piwigo_activity');
 define('LOUNGE_TABLE', 'piwigo_lounge');
+define('TAGS_TABLE', 'piwigo_tags');
 
 if (!defined('MKGETDIR_DEFAULT'))
 {
@@ -259,6 +260,26 @@ function community_test_ws_images_uploadAsync($params, $service)
   );
 }
 
+function community_test_ws_images_setInfo($params, $service)
+{
+  if (isset($GLOBALS['community_ws_images_set_info_delegate']))
+  {
+    return call_user_func($GLOBALS['community_ws_images_set_info_delegate'], $params, $service);
+  }
+
+  return null;
+}
+
+function community_test_ws_images_delete($params, $service)
+{
+  if (isset($GLOBALS['community_ws_images_delete_delegate']))
+  {
+    return call_user_func($GLOBALS['community_ws_images_delete_delegate'], $params, $service);
+  }
+
+  return count($params['image_id']);
+}
+
 function community_test_ws_images_addSimple($params, $service)
 {
   if (!empty($params['image_id']))
@@ -408,6 +429,8 @@ function community_test_reset_runtime()
     $GLOBALS['community_ws_images_add_simple_delegate'],
     $GLOBALS['community_ws_images_upload_delegate'],
     $GLOBALS['community_ws_images_upload_async_delegate'],
+    $GLOBALS['community_ws_images_set_info_delegate'],
+    $GLOBALS['community_ws_images_delete_delegate'],
     $GLOBALS['community_test_write_json_file_callback']
   );
 
@@ -444,6 +467,45 @@ function community_test_register_core_upload_methods($arr)
   global $conf;
 
   $service = &$arr[0];
+
+  $service->addMethod(
+    'pwg.images.delete',
+    'community_test_ws_images_delete',
+    array(
+      'image_id' => array('flags' => WS_PARAM_ACCEPT_ARRAY),
+      'pwg_token' => array(),
+    ),
+    'Deletes image(s).',
+    null,
+    array('admin_only' => true, 'post_only' => true)
+  );
+
+  $service->addMethod(
+    'pwg.images.setInfo',
+    'community_test_ws_images_setInfo',
+    array(
+      'image_id' => array('type' => WS_TYPE_ID),
+      'file' => array('default' => null),
+      'name' => array('default' => null),
+      'author' => array('default' => null),
+      'date_creation' => array('default' => null),
+      'comment' => array('default' => null),
+      'categories' => array('default' => null, 'info' => 'String list "category_id[,rank];category_id[,rank]".<br>The rank is optional and is equivalent to "auto" if not given.'),
+      'tag_ids' => array('default' => null, 'info' => 'Comma separated ids'),
+      'level' => array('default' => null, 'maxValue' => max($conf['available_permission_levels']), 'type' => WS_TYPE_INT | WS_TYPE_POSITIVE),
+      'single_value_mode' => array('default' => 'fill_if_empty'),
+      'multiple_value_mode' => array('default' => 'append'),
+      'pwg_token' => array('flags' => WS_PARAM_OPTIONAL),
+    ),
+    'Changes properties of an image.',
+    null,
+    array('admin_only' => true, 'post_only' => true)
+  );
+
+  $GLOBALS['community_test']['core_mutation_methods'] = array(
+    'pwg.images.delete' => community_test_get_registered_method($service, 'pwg.images.delete'),
+    'pwg.images.setInfo' => community_test_get_registered_method($service, 'pwg.images.setInfo'),
+  );
 
   $service->addMethod(
     'pwg.images.uploadCompleted',
@@ -654,7 +716,7 @@ function community_test_build_service($method_name, $request = array(), $is_admi
   );
 
   $_REQUEST = array_merge(array('method' => $method_name), $request);
-  $_POST = array('_community_test_post' => '1');
+  $_POST = array_merge(array('_community_test_post' => '1'), $request);
 
   $pwg_event_handlers['ws_add_methods'] = array();
   add_event_handler('ws_add_methods', 'community_test_register_core_upload_methods');

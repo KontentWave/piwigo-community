@@ -94,6 +94,36 @@ function community_call_ws_images_upload_async($params, $service)
   return community_finalize_ws_images_upload_async($params, $service, null);
 }
 
+function community_call_ws_images_set_info($params, $service)
+{
+  if (isset($GLOBALS['community_ws_images_set_info_delegate']))
+  {
+    return call_user_func($GLOBALS['community_ws_images_set_info_delegate'], $params, $service);
+  }
+
+  if (!function_exists('ws_images_setInfo'))
+  {
+    include_once(PHPWG_ROOT_PATH.'include/ws_functions/pwg.images.php');
+  }
+
+  return ws_images_setInfo($params, $service);
+}
+
+function community_call_ws_images_delete($params, $service)
+{
+  if (isset($GLOBALS['community_ws_images_delete_delegate']))
+  {
+    return call_user_func($GLOBALS['community_ws_images_delete_delegate'], $params, $service);
+  }
+
+  if (!function_exists('ws_images_delete'))
+  {
+    include_once(PHPWG_ROOT_PATH.'include/ws_functions/pwg.images.php');
+  }
+
+  return ws_images_delete($params, $service);
+}
+
 function community_call_add_uploaded_file($source_filepath, $original_filename = null, $categories = null, $level = null, $image_id = null, $original_md5sum = null)
 {
   if (isset($GLOBALS['community_test']['add_uploaded_file_calls']))
@@ -1182,6 +1212,338 @@ SELECT COUNT(*)
   }
 
   return true;
+}
+
+function community_invalid_mutation_parameter_error($message)
+{
+  return new PwgError(WS_ERR_INVALID_PARAM, $message);
+}
+
+function community_normalize_mutation_image_id($image_id)
+{
+  if (is_int($image_id) and $image_id > 0)
+  {
+    return $image_id;
+  }
+
+  if (is_string($image_id)
+    and preg_match('/^[1-9][0-9]*$/', $image_id)
+    and (strlen($image_id) < strlen((string) PHP_INT_MAX)
+      or (strlen($image_id) === strlen((string) PHP_INT_MAX)
+        and strcmp($image_id, (string) PHP_INT_MAX) <= 0)))
+  {
+    return (int) $image_id;
+  }
+
+  return null;
+}
+
+function community_is_valid_mutation_rank($rank)
+{
+  return 'auto' === $rank
+    or (is_string($rank)
+      and preg_match('/^[0-9]+$/', $rank)
+      and (strlen($rank) < strlen((string) PHP_INT_MAX)
+        or (strlen($rank) === strlen((string) PHP_INT_MAX)
+          and strcmp($rank, (string) PHP_INT_MAX) <= 0)));
+}
+
+function community_normalize_delete_image_ids($image_ids)
+{
+  if (is_array($image_ids))
+  {
+    $raw_ids = $image_ids;
+  }
+  elseif (is_int($image_ids) or is_string($image_ids))
+  {
+    $raw_ids = preg_split('/[\s,;\|]/', (string) $image_ids, -1, PREG_SPLIT_NO_EMPTY);
+  }
+  else
+  {
+    return null;
+  }
+
+  if (empty($raw_ids))
+  {
+    return null;
+  }
+
+  $normalized_ids = array();
+  foreach ($raw_ids as $raw_id)
+  {
+    $image_id = community_normalize_mutation_image_id($raw_id);
+    if (!isset($image_id) or in_array($image_id, $normalized_ids, true))
+    {
+      return null;
+    }
+
+    $normalized_ids[] = $image_id;
+  }
+
+  return $normalized_ids;
+}
+
+function community_get_mutation_upload_categories()
+{
+  global $user;
+
+  $user_permissions = community_get_user_permissions($user['id']);
+  if (empty($user_permissions['upload_categories']))
+  {
+    return null;
+  }
+
+  $upload_categories = array();
+  foreach ($user_permissions['upload_categories'] as $category_id)
+  {
+    $normalized_id = community_normalize_mutation_image_id($category_id);
+    if (isset($normalized_id))
+    {
+      $upload_categories[] = $normalized_id;
+    }
+  }
+
+  return array_values(array_unique($upload_categories));
+}
+
+function community_authorize_image_mutation_targets($image_ids)
+{
+  global $user;
+
+  $upload_categories = community_get_mutation_upload_categories();
+  if (empty($upload_categories))
+  {
+    return false;
+  }
+
+  $query = '
+SELECT
+    images.id,
+    images.added_by,
+    image_category.category_id
+  FROM '.IMAGES_TABLE.' AS images
+    LEFT JOIN '.IMAGE_CATEGORY_TABLE.' AS image_category ON image_category.image_id = images.id
+  WHERE images.id IN ('.implode(',', $image_ids).')
+;';
+  $rows = query2array($query);
+
+  $authorized_images = array();
+  foreach ($rows as $row)
+  {
+    $image_id = isset($row['id']) ? (int) $row['id'] : 0;
+    if (!in_array($image_id, $image_ids, true) or (int) $row['added_by'] !== (int) $user['id'])
+    {
+      return false;
+    }
+
+    if (isset($row['category_id']) and !in_array((int) $row['category_id'], $upload_categories, true))
+    {
+      return false;
+    }
+
+    $authorized_images[$image_id] = true;
+  }
+
+  if (count($authorized_images) !== count($image_ids))
+  {
+    return false;
+  }
+
+  if (in_array($user['status'], array('guest', 'generic'), true))
+  {
+    $query = '
+SELECT DISTINCT object_id
+  FROM '.ACTIVITY_TABLE.'
+  WHERE object = \'photo\'
+    AND action = \'add\'
+    AND object_id IN ('.implode(',', $image_ids).')
+    AND session_idx = \''.pwg_db_real_escape_string(session_id()).'\'
+;';
+    $session_image_ids = array_map('intval', query2array($query, null, 'object_id'));
+    sort($session_image_ids);
+    $expected_image_ids = $image_ids;
+    sort($expected_image_ids);
+    if ($session_image_ids !== $expected_image_ids)
+    {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+function community_validate_mutation_categories($categories, $multiple_value_mode)
+{
+  $upload_categories = community_get_mutation_upload_categories();
+  if (empty($upload_categories) or !is_string($categories))
+  {
+    return false;
+  }
+
+  if ('' === $categories)
+  {
+    return 'replace' === $multiple_value_mode;
+  }
+
+  $category_ids = array();
+  foreach (explode(';', $categories) as $token)
+  {
+    if (!preg_match('/^([1-9][0-9]*)(?:,(auto|[0-9]+))?$/', $token, $matches))
+    {
+      return false;
+    }
+
+    $category_id = community_normalize_mutation_image_id($matches[1]);
+    $rank = isset($matches[2]) ? $matches[2] : 'auto';
+    if (!isset($category_id)
+      or !community_is_valid_mutation_rank($rank)
+      or in_array($category_id, $category_ids, true)
+      or !in_array($category_id, $upload_categories, true))
+    {
+      return false;
+    }
+
+    $category_ids[] = $category_id;
+  }
+
+  $existing_ids = array_map('intval', query2array(
+    'SELECT id FROM '.CATEGORIES_TABLE.' WHERE id IN ('.implode(',', $category_ids).');',
+    null,
+    'id'
+  ));
+  sort($existing_ids);
+  $expected_ids = $category_ids;
+  sort($expected_ids);
+
+  return $existing_ids === $expected_ids;
+}
+
+function community_validate_mutation_tag_ids($tag_ids, $multiple_value_mode)
+{
+  if (!is_string($tag_ids))
+  {
+    return false;
+  }
+
+  if ('' === $tag_ids)
+  {
+    return 'replace' === $multiple_value_mode;
+  }
+
+  $normalized_ids = array();
+  foreach (explode(',', $tag_ids) as $raw_id)
+  {
+    $tag_id = community_normalize_mutation_image_id(trim($raw_id));
+    if (!isset($tag_id) or in_array($tag_id, $normalized_ids, true))
+    {
+      return false;
+    }
+
+    $normalized_ids[] = $tag_id;
+  }
+
+  $existing_ids = array_map('intval', query2array(
+    'SELECT id FROM '.TAGS_TABLE.' WHERE id IN ('.implode(',', $normalized_ids).');',
+    null,
+    'id'
+  ));
+  sort($existing_ids);
+  sort($normalized_ids);
+
+  return $existing_ids === $normalized_ids;
+}
+
+function community_ws_images_set_info($params, $service)
+{
+  $image_id = isset($params['image_id'])
+    ? community_normalize_mutation_image_id($params['image_id'])
+    : null;
+  if (!isset($image_id))
+  {
+    return community_invalid_mutation_parameter_error('Invalid image_id');
+  }
+
+  if (!isset($params['single_value_mode'])
+    or !in_array($params['single_value_mode'], array('fill_if_empty', 'replace'), true))
+  {
+    return community_invalid_mutation_parameter_error('Invalid single_value_mode');
+  }
+
+  if (!isset($params['multiple_value_mode'])
+    or !in_array($params['multiple_value_mode'], array('append', 'replace'), true))
+  {
+    return community_invalid_mutation_parameter_error('Invalid multiple_value_mode');
+  }
+
+  if (isset($_REQUEST['tag_list']))
+  {
+    return community_invalid_mutation_parameter_error('tag_list is not supported');
+  }
+
+  if (isset($params['categories'])
+    and !community_validate_mutation_categories($params['categories'], $params['multiple_value_mode']))
+  {
+    return community_invalid_mutation_parameter_error('Invalid categories');
+  }
+
+  if (isset($params['tag_ids'])
+    and !community_validate_mutation_tag_ids($params['tag_ids'], $params['multiple_value_mode']))
+  {
+    return community_invalid_mutation_parameter_error('Invalid tag_ids');
+  }
+
+  foreach (array('name', 'author', 'comment', 'date_creation') as $property)
+  {
+    if (isset($params[$property]))
+    {
+      if (!is_string($params[$property]))
+      {
+        return community_invalid_mutation_parameter_error('Invalid '.$property);
+      }
+
+      $params[$property] = strip_tags($params[$property], '<b><strong><em><i>');
+    }
+  }
+
+  if (isset($params['file']) and !is_string($params['file']))
+  {
+    return community_invalid_mutation_parameter_error('Invalid file');
+  }
+
+  unset($params['level']);
+  $params['image_id'] = $image_id;
+
+  if (!community_authorize_image_mutation_targets(array($image_id)))
+  {
+    return community_access_denied_error();
+  }
+
+  return community_call_ws_images_set_info($params, $service);
+}
+
+function community_ws_images_delete($params, $service)
+{
+  if (!isset($params['pwg_token']) or get_pwg_token() != $params['pwg_token'])
+  {
+    return new PwgError(403, 'Invalid security token');
+  }
+
+  $image_ids = isset($params['image_id'])
+    ? community_normalize_delete_image_ids($params['image_id'])
+    : null;
+  if (empty($image_ids))
+  {
+    return community_invalid_mutation_parameter_error('Invalid image_id');
+  }
+
+  if (!community_authorize_image_mutation_targets($image_ids))
+  {
+    return community_access_denied_error();
+  }
+
+  $params['image_id'] = $image_ids;
+
+  return community_call_ws_images_delete($params, $service);
 }
 
 function community_ws_images_add_simple($params, $service)

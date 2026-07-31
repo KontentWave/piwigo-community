@@ -43,6 +43,348 @@ class OriginalSumGuardTest extends TestCase
     $this->assertSame(array('post_only' => true), $communityCompletionMethod['options']);
   }
 
+  public function testNonAdminMutationLifecycleRegistersCommunityWrappersWithoutAmbientMutation()
+  {
+    global $conf, $user;
+
+    $main = file_get_contents(dirname(__DIR__).'/main.inc.php');
+    $this->assertStringNotContainsString("'pwg.images.setInfo' == \$_REQUEST['method']", $main);
+    $this->assertStringNotContainsString("\$conf['available_permission_levels'][] = 16", $main);
+
+    $service = community_test_build_service('pwg.images.setInfo', array('image_id' => '12'));
+    $status = $user['status'];
+    $post = $_POST;
+    $request = $_REQUEST;
+    $configuration = $conf;
+
+    $setInfoMethod = community_test_get_registered_method($service, 'pwg.images.setInfo');
+    $deleteMethod = community_test_get_registered_method($service, 'pwg.images.delete');
+
+    $this->assertSame('community_ws_images_set_info', $setInfoMethod['callback']);
+    $this->assertSame($GLOBALS['community_test']['core_mutation_methods']['pwg.images.setInfo']['signature'], $setInfoMethod['signature']);
+    $this->assertSame(array('post_only' => true), $setInfoMethod['options']);
+    $this->assertSame('community_ws_images_delete', $deleteMethod['callback']);
+    $this->assertSame($GLOBALS['community_test']['core_mutation_methods']['pwg.images.delete']['signature'], $deleteMethod['signature']);
+    $this->assertSame(array('post_only' => true), $deleteMethod['options']);
+    $this->assertSame($status, $user['status']);
+    $this->assertSame($post, $_POST);
+    $this->assertSame($request, $_REQUEST);
+    $this->assertSame($configuration, $conf);
+  }
+
+  public function testMutationLifecycleAllowsOwnedEligibleEditAndMultiImageDeleteExactlyOnce()
+  {
+    global $conf, $user;
+
+    $service = community_test_build_service('pwg.images.setInfo', array('image_id' => '12'));
+    $_SESSION['community_user_permissions']['upload_categories'] = array(1, 2);
+    $this->configureMutationFixture(array(
+      12 => array('added_by' => 2, 'categories' => array(1, 2)),
+      13 => array('added_by' => 2, 'categories' => array(2)),
+    ));
+    $status = $user['status'];
+    $post = $_POST;
+    $request = $_REQUEST;
+    $configuration = $conf;
+    $setInfoCalls = 0;
+    $GLOBALS['community_ws_images_set_info_delegate'] = function ($params) use (&$setInfoCalls, &$user, $status) {
+      $setInfoCalls++;
+      TestCase::assertSame($status, $user['status']);
+      TestCase::assertSame(12, $params['image_id']);
+      TestCase::assertSame('<b>safe</b>bad()', $params['name']);
+      TestCase::assertArrayNotHasKey('level', $params);
+      return 'edited';
+    };
+
+    $editResult = $service->invoke('pwg.images.setInfo', array(
+      'image_id' => '12',
+      'name' => '<b>safe</b><script>bad()</script>',
+      'level' => 0,
+      'single_value_mode' => 'replace',
+      'multiple_value_mode' => 'append',
+    ));
+
+    $this->assertSame('edited', $editResult);
+    $this->assertSame(1, $setInfoCalls);
+    $this->assertSame($status, $user['status']);
+    $this->assertSame($post, $_POST);
+    $this->assertSame($request, $_REQUEST);
+    $this->assertSame($configuration, $conf);
+
+    $service = community_test_build_service('pwg.images.delete', array('image_id' => array('12', '13')));
+    $_SESSION['community_user_permissions']['upload_categories'] = array(1, 2);
+    $this->configureMutationFixture(array(
+      12 => array('added_by' => 2, 'categories' => array(1, 2)),
+      13 => array('added_by' => 2, 'categories' => array(2)),
+    ));
+    $deleteCalls = 0;
+    $GLOBALS['community_ws_images_delete_delegate'] = function ($params) use (&$deleteCalls) {
+      $deleteCalls++;
+      TestCase::assertSame(array(12, 13), $params['image_id']);
+      return 2;
+    };
+
+    $deleteResult = $service->invoke('pwg.images.delete', array(
+      'image_id' => '12,13',
+      'pwg_token' => 'test-token',
+    ));
+
+    $this->assertSame(2, $deleteResult);
+    $this->assertSame(1, $deleteCalls);
+    $this->assertSame('normal', $user['status']);
+  }
+
+  #[DataProvider('provideInvalidMutationImageIds')]
+  public function testMutationLifecycleRejectsMalformedImageIdsWithoutDelegation($method, $imageIds)
+  {
+    $request = array('image_id' => $imageIds);
+    if ('pwg.images.delete' === $method)
+    {
+      $request['pwg_token'] = 'test-token';
+    }
+    $service = community_test_build_service($method, $request);
+    $calls = 0;
+    $GLOBALS['community_ws_images_set_info_delegate'] = $GLOBALS['community_ws_images_delete_delegate'] = function () use (&$calls) {
+      $calls++;
+    };
+
+    $result = $service->invoke($method, $request);
+
+    $this->assertInstanceOf(PwgError::class, $result);
+    $this->assertSame(0, $calls);
+    $this->assertSame(array(), $GLOBALS['community_test']['queries']);
+  }
+
+  public function testMutationIdNormalizerRejectsOverflowWithoutLossyConversion()
+  {
+    $this->assertNull(community_normalize_mutation_image_id((string) PHP_INT_MAX.'0'));
+  }
+
+  #[DataProvider('provideDeniedMutationTargets')]
+  public function testMutationLifecycleRejectsMissingForeignMixedAndWrongAlbumTargetsAtomically($method, $images, $target)
+  {
+    $request = array('image_id' => $target);
+    if ('pwg.images.delete' === $method)
+    {
+      $request['pwg_token'] = 'test-token';
+    }
+    $service = community_test_build_service($method, $request);
+    $this->configureMutationFixture($images);
+    $calls = 0;
+    $GLOBALS['community_ws_images_set_info_delegate'] = $GLOBALS['community_ws_images_delete_delegate'] = function () use (&$calls) {
+      $calls++;
+    };
+
+    $result = $service->invoke($method, $request);
+
+    $this->assertInstanceOf(PwgError::class, $result);
+    $this->assertSame(401, $result->code());
+    $this->assertSame('Access denied', $result->message());
+    $this->assertSame(0, $calls);
+    $this->assertNoMutationSideEffects();
+  }
+
+  #[DataProvider('provideMutationMethods')]
+  public function testMutationLifecycleRejectsCategoryCreationOnlyUserBeforeObjectQuery($method)
+  {
+    $params = array('image_id' => 12);
+    if ('pwg.images.delete' === $method)
+    {
+      $params['pwg_token'] = 'test-token';
+    }
+    $service = community_test_build_service($method, $params);
+    $_SESSION['community_user_permissions']['upload_categories'] = array();
+    $_SESSION['community_user_permissions']['create_categories'] = array(1);
+    $calls = 0;
+    $GLOBALS['community_ws_images_set_info_delegate'] = $GLOBALS['community_ws_images_delete_delegate'] = function () use (&$calls) {
+      $calls++;
+    };
+
+    $result = $service->invoke($method, $params);
+
+    $this->assertInstanceOf(PwgError::class, $result);
+    $this->assertSame(401, $result->code());
+    $this->assertSame(0, $calls);
+    $this->assertSame(array(), $GLOBALS['community_test']['queries']);
+  }
+
+  public function testSetInfoLifecyclePreservesAuthorizedCategoryAndTagMutationCompatibility()
+  {
+    $service = community_test_build_service('pwg.images.setInfo', array('image_id' => 12));
+    $_SESSION['community_user_permissions']['upload_categories'] = array(1, 2);
+    $this->configureMutationFixture(
+      array(12 => array('added_by' => 2, 'categories' => array(1))),
+      array(1, 2),
+      array(4, 5)
+    );
+    $calls = array();
+    $GLOBALS['community_ws_images_set_info_delegate'] = function ($params) use (&$calls) {
+      $calls[] = $params;
+      return null;
+    };
+
+    $appendResult = $service->invoke('pwg.images.setInfo', array(
+      'image_id' => 12,
+      'categories' => '2,auto',
+      'tag_ids' => '4,5',
+      'multiple_value_mode' => 'append',
+    ));
+    $replaceResult = $service->invoke('pwg.images.setInfo', array(
+      'image_id' => 12,
+      'categories' => '1,3;2',
+      'tag_ids' => '',
+      'multiple_value_mode' => 'replace',
+    ));
+
+    $this->assertNull($appendResult);
+    $this->assertNull($replaceResult);
+    $this->assertCount(2, $calls);
+    $this->assertSame('2,auto', $calls[0]['categories']);
+    $this->assertSame('4,5', $calls[0]['tag_ids']);
+    $this->assertSame('', $calls[1]['tag_ids']);
+  }
+
+  #[DataProvider('provideInvalidSetInfoMutations')]
+  public function testSetInfoLifecycleRejectsInvalidModesCategoriesTagsAndFieldsBeforeDelegation($params)
+  {
+    $service = community_test_build_service('pwg.images.setInfo', array('image_id' => 12));
+    $_SESSION['community_user_permissions']['upload_categories'] = array(1, 2);
+    $this->configureMutationFixture(
+      array(12 => array('added_by' => 2, 'categories' => array(1))),
+      array(1, 2),
+      array(4, 5)
+    );
+    $calls = 0;
+    $GLOBALS['community_ws_images_set_info_delegate'] = function () use (&$calls) {
+      $calls++;
+    };
+
+    $result = $service->invoke('pwg.images.setInfo', array_merge(array('image_id' => 12), $params));
+
+    $this->assertInstanceOf(PwgError::class, $result);
+    $this->assertSame(0, $calls);
+    $this->assertNoMutationSideEffects();
+  }
+
+  public function testSetInfoLifecycleRejectsRequestGlobalTagListWithoutChangingIt()
+  {
+    $service = community_test_build_service('pwg.images.setInfo', array('image_id' => 12));
+    $_REQUEST['tag_list'] = array('<script>new tag</script>');
+    $request = $_REQUEST;
+    $calls = 0;
+    $GLOBALS['community_ws_images_set_info_delegate'] = function () use (&$calls) {
+      $calls++;
+    };
+
+    $result = $service->invoke('pwg.images.setInfo', array('image_id' => 12));
+
+    $this->assertInstanceOf(PwgError::class, $result);
+    $this->assertSame(0, $calls);
+    $this->assertSame($request, $_REQUEST);
+    $this->assertSame(array(), $GLOBALS['community_test']['queries']);
+    $this->assertNoMutationSideEffects();
+  }
+
+  #[DataProvider('provideMutationMethods')]
+  public function testGenericMutationLifecycleRequiresCurrentSessionProvenance($method)
+  {
+    global $user;
+
+    $params = array('image_id' => 12);
+    if ('pwg.images.delete' === $method)
+    {
+      $params['pwg_token'] = 'test-token';
+    }
+    $service = community_test_build_service($method, $params);
+    $user['status'] = 'generic';
+    $this->configureMutationFixture(array(
+      12 => array('added_by' => 2, 'categories' => array(1), 'current_session' => false),
+    ));
+    $calls = 0;
+    $GLOBALS['community_ws_images_set_info_delegate'] = $GLOBALS['community_ws_images_delete_delegate'] = function () use (&$calls) {
+      $calls++;
+      return 1;
+    };
+
+    $denied = $service->invoke($method, $params);
+    $this->assertInstanceOf(PwgError::class, $denied);
+    $this->assertSame(0, $calls);
+
+    $this->configureMutationFixture(array(
+      12 => array('added_by' => 2, 'categories' => array(1), 'current_session' => true),
+    ));
+    $allowed = $service->invoke($method, $params);
+    $this->assertSame(1, $allowed);
+    $this->assertSame(1, $calls);
+  }
+
+  public function testMutationLifecycleRechecksRevokedGrantImmediatelyBeforeDelegation()
+  {
+    $service = community_test_build_service('pwg.images.setInfo', array('image_id' => 12));
+    $_SESSION['community_user_permissions']['upload_categories'] = array(1, 2);
+    $this->configureMutationFixture(
+      array(12 => array('added_by' => 2, 'categories' => array(1))),
+      array(2),
+      array(),
+      function ($query) {
+        if (false !== strpos($query, 'FROM '.CATEGORIES_TABLE))
+        {
+          $_SESSION['community_user_permissions']['upload_categories'] = array();
+        }
+      }
+    );
+    $calls = 0;
+    $GLOBALS['community_ws_images_set_info_delegate'] = function () use (&$calls) {
+      $calls++;
+    };
+
+    $result = $service->invoke('pwg.images.setInfo', array(
+      'image_id' => 12,
+      'categories' => '2',
+    ));
+
+    $this->assertInstanceOf(PwgError::class, $result);
+    $this->assertSame(401, $result->code());
+    $this->assertSame(0, $calls);
+  }
+
+  #[DataProvider('provideInvalidDeleteTokens')]
+  public function testDeleteLifecycleRejectsInvalidTokenBeforeAuthorizationQueries($token, $includeToken)
+  {
+    $params = array('image_id' => 12);
+    if ($includeToken)
+    {
+      $params['pwg_token'] = $token;
+    }
+    $service = community_test_build_service('pwg.images.delete', $params);
+    $calls = 0;
+    $GLOBALS['community_ws_images_delete_delegate'] = function () use (&$calls) {
+      $calls++;
+    };
+
+    $result = $service->invoke('pwg.images.delete', $params);
+
+    $this->assertInstanceOf(PwgError::class, $result);
+    $this->assertSame(0, $calls);
+    $this->assertSame(array(), $GLOBALS['community_test']['queries']);
+    $this->assertNoMutationSideEffects();
+  }
+
+  public function testMutationLifecycleAdministratorAndExplicitBypassKeepCoreCallbacks()
+  {
+    $adminService = community_test_build_service('pwg.images.setInfo', array('image_id' => 12), true);
+    $this->assertSame('community_test_ws_images_setInfo', community_test_get_registered_method($adminService, 'pwg.images.setInfo')['callback']);
+    $this->assertSame('community_test_ws_images_delete', community_test_get_registered_method($adminService, 'pwg.images.delete')['callback']);
+
+    $bypassService = community_test_build_service('pwg.images.delete', array(
+      'image_id' => 12,
+      'pwg_token' => 'test-token',
+      'faked_by_community' => 'false',
+    ));
+    $this->assertSame('community_test_ws_images_setInfo', community_test_get_registered_method($bypassService, 'pwg.images.setInfo')['callback']);
+    $this->assertSame('community_test_ws_images_delete', community_test_get_registered_method($bypassService, 'pwg.images.delete')['callback']);
+  }
+
   public function testBrowserUsesOneAuthoritativeCompletionRequestWithFailureHandling()
   {
     $template = file_get_contents(dirname(__DIR__).'/template/add_photos.tpl');
@@ -2428,6 +2770,73 @@ class OriginalSumGuardTest extends TestCase
     );
   }
 
+  private function configureMutationFixture($images, $existingCategories = array(1), $existingTags = array(), $beforeQuery = null)
+  {
+    $GLOBALS['community_test']['query2array_callback'] = function ($query, $keyField, $valueField) use (&$images, $existingCategories, $existingTags, $beforeQuery) {
+      if (isset($beforeQuery))
+      {
+        $beforeQuery($query);
+      }
+
+      if (false !== strpos($query, 'FROM '.IMAGES_TABLE.' AS images'))
+      {
+        preg_match('/images\.id IN \(([^)]+)\)/', $query, $matches);
+        $targetIds = array_map('intval', explode(',', $matches[1]));
+        $rows = array();
+        foreach ($targetIds as $imageId)
+        {
+          if (!isset($images[$imageId]))
+          {
+            continue;
+          }
+          $categories = $images[$imageId]['categories'];
+          if (empty($categories))
+          {
+            $rows[] = array('id' => $imageId, 'added_by' => $images[$imageId]['added_by'], 'category_id' => null);
+          }
+          foreach ($categories as $categoryId)
+          {
+            $rows[] = array('id' => $imageId, 'added_by' => $images[$imageId]['added_by'], 'category_id' => $categoryId);
+          }
+        }
+        return $rows;
+      }
+
+      if (false !== strpos($query, 'FROM '.ACTIVITY_TABLE))
+      {
+        preg_match('/object_id IN \(([^)]+)\)/', $query, $matches);
+        $targetIds = array_map('intval', explode(',', $matches[1]));
+        return array_values(array_filter($targetIds, function ($imageId) use ($images) {
+          return !empty($images[$imageId]['current_session']);
+        }));
+      }
+
+      if (false !== strpos($query, 'FROM '.CATEGORIES_TABLE))
+      {
+        preg_match('/id IN \(([^)]+)\)/', $query, $matches);
+        $targetIds = array_map('intval', explode(',', $matches[1]));
+        return array_values(array_intersect($existingCategories, $targetIds));
+      }
+
+      if (false !== strpos($query, 'FROM '.TAGS_TABLE))
+      {
+        preg_match('/id IN \(([^)]+)\)/', $query, $matches);
+        $targetIds = array_map('intval', explode(',', $matches[1]));
+        return array_values(array_intersect($existingTags, $targetIds));
+      }
+
+      return array();
+    };
+  }
+
+  private function assertNoMutationSideEffects()
+  {
+    $this->assertSame(array(), $GLOBALS['community_test']['single_updates']);
+    $this->assertSame(array(), $GLOBALS['community_test']['set_tag_calls']);
+    $this->assertSame(array(), $GLOBALS['community_test']['trigger_notify_calls']);
+    $this->assertSame(0, $GLOBALS['community_test']['invalidate_user_cache_calls']);
+  }
+
   public static function provideInvalidChecksums()
   {
     return array(
@@ -2439,6 +2848,75 @@ class OriginalSumGuardTest extends TestCase
       'too short' => array('abcd1234'),
       'too long' => array('abcd1234abcd1234abcd1234abcd123400'),
       'non hex' => array('zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz'),
+    );
+  }
+
+  public static function provideInvalidMutationImageIds()
+  {
+    return array(
+      'setInfo zero' => array('pwg.images.setInfo', 0),
+      'setInfo negative' => array('pwg.images.setInfo', -1),
+      'setInfo malformed' => array('pwg.images.setInfo', 'abc'),
+      'delete empty scalar' => array('pwg.images.delete', ''),
+      'delete empty array' => array('pwg.images.delete', array()),
+      'delete zero' => array('pwg.images.delete', '0'),
+      'delete negative' => array('pwg.images.delete', '-1'),
+      'delete malformed' => array('pwg.images.delete', '12x'),
+      'delete duplicate scalar' => array('pwg.images.delete', '12,12'),
+      'delete duplicate array' => array('pwg.images.delete', array('12', 12)),
+      'delete overflow' => array('pwg.images.delete', (string) PHP_INT_MAX.'0'),
+    );
+  }
+
+  public static function provideDeniedMutationTargets()
+  {
+    return array(
+      'missing edit' => array('pwg.images.setInfo', array(), 12),
+      'foreign edit' => array('pwg.images.setInfo', array(12 => array('added_by' => 3, 'categories' => array(1))), 12),
+      'wrong album edit' => array('pwg.images.setInfo', array(12 => array('added_by' => 2, 'categories' => array(1, 9))), 12),
+      'missing delete' => array('pwg.images.delete', array(), '12'),
+      'mixed delete' => array('pwg.images.delete', array(
+        12 => array('added_by' => 2, 'categories' => array(1)),
+        13 => array('added_by' => 3, 'categories' => array(1)),
+      ), '12,13'),
+      'wrong album delete' => array('pwg.images.delete', array(12 => array('added_by' => 2, 'categories' => array(1, 9))), '12'),
+    );
+  }
+
+  public static function provideInvalidSetInfoMutations()
+  {
+    return array(
+      'invalid single mode' => array(array('single_value_mode' => 'merge')),
+      'invalid multiple mode' => array(array('multiple_value_mode' => 'merge')),
+      'malformed category' => array(array('categories' => '1,bad')),
+      'overflow category' => array(array('categories' => (string) PHP_INT_MAX.'0')),
+      'overflow category rank' => array(array('categories' => '1,'.(string) PHP_INT_MAX.'0')),
+      'duplicate category' => array(array('categories' => '1;1')),
+      'unknown category' => array(array('categories' => '3')),
+      'unauthorized category' => array(array('categories' => '9')),
+      'mixed category' => array(array('categories' => '1;9')),
+      'malformed tag' => array(array('tag_ids' => '4,bad')),
+      'duplicate tag' => array(array('tag_ids' => '4,4')),
+      'unknown tag' => array(array('tag_ids' => '6')),
+      'empty append tags' => array(array('tag_ids' => '', 'multiple_value_mode' => 'append')),
+      'array text field' => array(array('name' => array('bad'))),
+      'array file field' => array(array('file' => array('bad'))),
+    );
+  }
+
+  public static function provideMutationMethods()
+  {
+    return array(
+      'setInfo' => array('pwg.images.setInfo'),
+      'delete' => array('pwg.images.delete'),
+    );
+  }
+
+  public static function provideInvalidDeleteTokens()
+  {
+    return array(
+      'missing' => array(null, false),
+      'invalid' => array('wrong-token', true),
     );
   }
 
