@@ -7,6 +7,16 @@ define('IMAGE_CATEGORY_TABLE', 'piwigo_image_category');
 define('IMAGES_TABLE', 'piwigo_images');
 define('ACTIVITY_TABLE', 'piwigo_activity');
 
+if (!defined('MKGETDIR_DEFAULT'))
+{
+  define('MKGETDIR_DEFAULT', 0);
+}
+
+if (!defined('MKGETDIR_DIE_ON_ERROR'))
+{
+  define('MKGETDIR_DIE_ON_ERROR', 0);
+}
+
 $prefixeTable = 'piwigo_';
 
 require_once PHPWG_ROOT_PATH . 'include/functions_plugins.inc.php';
@@ -48,75 +58,18 @@ function get_root_url()
   return '/';
 }
 
-function conf_update_param($name, $value)
+class CommunityTestLogger
 {
-  $GLOBALS['conf'][$name] = $value;
-}
-
-function generate_key($length)
-{
-  return str_repeat('k', $length);
-}
-
-function calculate_permissions()
-{
-  return '';
-}
-
-function get_subcat_ids($category_ids)
-{
-  return $category_ids;
-}
-
-function array_from_query($query)
-{
-  $GLOBALS['community_test']['queries'][] = $query;
-  return array();
-}
-
-function hash_from_query($query)
-{
-  $GLOBALS['community_test']['queries'][] = $query;
-  return array();
-}
-
-function query2array($query)
-{
-  $GLOBALS['community_test']['queries'][] = $query;
-
-  if (!empty($GLOBALS['community_test']['query2array_returns']))
+  public function debug($message, $channel = null)
   {
-    return array_shift($GLOBALS['community_test']['query2array_returns']);
+    $GLOBALS['community_test']['debug_logs'][] = array(
+      'message' => $message,
+      'channel' => $channel,
+    );
   }
-
-  if (array_key_exists('query2array_return', $GLOBALS['community_test']))
-  {
-    return $GLOBALS['community_test']['query2array_return'];
-  }
-
-  return array();
 }
 
-function pwg_db_real_escape_string($value)
-{
-  $GLOBALS['community_test']['escaped_values'][] = $value;
-
-  if (!empty($GLOBALS['community_test']['escape_callback']))
-  {
-    return call_user_func($GLOBALS['community_test']['escape_callback'], $value);
-  }
-
-  return addslashes($value);
-}
-
-function pwg_query($query)
-{
-  $GLOBALS['community_test']['queries'][] = $query;
-
-  return $query;
-}
-
-function pwg_db_fetch_row($result)
+function pwg_db_fetch_row($result = null)
 {
   $GLOBALS['community_test']['fetch_row_args'][] = $result;
 
@@ -143,6 +96,76 @@ function pwg_db_fetch_assoc()
   return false;
 }
 
+function pwg_query($query)
+{
+  $GLOBALS['community_test']['queries'][] = $query;
+
+  return $query;
+}
+
+function pwg_db_real_escape_string($value)
+{
+  $GLOBALS['community_test']['escaped_values'][] = $value;
+
+  if (isset($GLOBALS['community_test']['escape_callback']))
+  {
+    return call_user_func($GLOBALS['community_test']['escape_callback'], $value);
+  }
+
+  return addslashes($value);
+}
+
+function pwg_db_num_rows($result)
+{
+  if (!empty($GLOBALS['community_test']['num_rows_returns']))
+  {
+    return array_shift($GLOBALS['community_test']['num_rows_returns']);
+  }
+
+  if (array_key_exists('num_rows_return', $GLOBALS['community_test']))
+  {
+    return $GLOBALS['community_test']['num_rows_return'];
+  }
+
+  return 0;
+}
+
+function query2array($query, $key_field = null, $value_field = null)
+{
+  $GLOBALS['community_test']['queries'][] = $query;
+
+  if (!empty($GLOBALS['community_test']['query2array_returns']))
+  {
+    return array_shift($GLOBALS['community_test']['query2array_returns']);
+  }
+
+  if (false !== strpos($query, 'FROM '.CATEGORIES_TABLE) && preg_match('/IN \(([^)]+)\)/', $query, $matches))
+  {
+    $ids = preg_split('/\s*,\s*/', trim($matches[1]));
+
+    if (null === $key_field && 'id' === $value_field)
+    {
+      return $ids;
+    }
+  }
+
+  return array();
+}
+
+function mass_inserts($table, $columns, $rows)
+{
+  $GLOBALS['community_test']['mass_inserts'][] = array(
+    'table' => $table,
+    'columns' => $columns,
+    'rows' => $rows,
+  );
+}
+
+function mkgetdir($directory, $flags = 0)
+{
+  return is_dir($directory) || @mkdir($directory, 0777, true);
+}
+
 function get_pwg_token()
 {
   return 'test-token';
@@ -164,158 +187,7 @@ function single_update($table, $update, $where)
   );
 }
 
-function add_tags($tag_ids, $image_ids)
-{
-  $GLOBALS['community_test']['tag_updates'][] = array(
-    'tag_ids' => $tag_ids,
-    'image_ids' => $image_ids,
-  );
-}
-
-function sync_metadata($image_ids)
-{
-  $GLOBALS['community_test']['metadata_sync_calls'][] = $image_ids;
-}
-
-function invalidate_user_cache()
-{
-  $GLOBALS['community_test']['invalidate_user_cache_calls']++;
-}
-
-function tag_id_from_tag_name($tag_name)
-{
-  return strlen($tag_name);
-}
-
-function add_uploaded_file($tmp_name, $original_name, $categories, $level, $image_id = null)
-{
-  $GLOBALS['community_test']['add_uploaded_file_calls'][] = array(
-    'tmp_name' => $tmp_name,
-    'original_name' => $original_name,
-    'categories' => $categories,
-    'level' => $level,
-    'image_id' => $image_id,
-  );
-
-  if (isset($GLOBALS['community_test']['add_uploaded_file_callback']))
-  {
-    return call_user_func(
-      $GLOBALS['community_test']['add_uploaded_file_callback'],
-      $tmp_name,
-      $original_name,
-      $categories,
-      $level,
-      $image_id
-    );
-  }
-
-  return 987;
-}
-
-function ws_images_addSimple($params, $service)
-{
-  if (!isset($_FILES['image']))
-  {
-    return new PwgError(405, 'The image (file) is missing');
-  }
-
-  if (isset($_FILES['image']['error']) && $_FILES['image']['error'] != 0)
-  {
-    return new PwgError(500, 'Upload failed');
-  }
-
-  if ($params['image_id'] > 0)
-  {
-    $query = '
-SELECT COUNT(*)
-  FROM '. IMAGES_TABLE .'
-  WHERE id = '. $params['image_id'] .'
-;';
-    list($count) = pwg_db_fetch_row(pwg_query($query));
-    if ($count == 0)
-    {
-      return new PwgError(404, 'image_id not found');
-    }
-  }
-
-  $image_id = add_uploaded_file(
-    $_FILES['image']['tmp_name'],
-    $_FILES['image']['name'],
-    $params['category'],
-    8,
-    $params['image_id'] > 0 ? $params['image_id'] : null
-  );
-
-  $info_columns = array(
-    'name',
-    'author',
-    'comment',
-    'level',
-    'date_creation',
-  );
-
-  $update = array();
-  foreach ($info_columns as $key)
-  {
-    if (isset($params[$key]))
-    {
-      $update[$key] = $params[$key];
-    }
-  }
-
-  single_update(
-    IMAGES_TABLE,
-    $update,
-    array('id' => $image_id)
-  );
-
-  if (isset($params['tags']) and !empty($params['tags']))
-  {
-    $tag_ids = array();
-    if (is_array($params['tags']))
-    {
-      foreach ($params['tags'] as $tag_name)
-      {
-        $tag_ids[] = tag_id_from_tag_name($tag_name);
-      }
-    }
-    else
-    {
-      $tag_names = preg_split('~(?<!\\\\),~', $params['tags']);
-      foreach ($tag_names as $tag_name)
-      {
-        $tag_ids[] = tag_id_from_tag_name(preg_replace('#\\\\*,#', ',', $tag_name));
-      }
-    }
-
-    add_tags($tag_ids, array($image_id));
-  }
-
-  $url_params = array('image_id' => $image_id);
-
-  if (!empty($params['category']))
-  {
-    $query = '
-SELECT id, name, permalink
-  FROM '. CATEGORIES_TABLE .'
-  WHERE id = '. $params['category'][0] .'
-;';
-    $result = pwg_query($query);
-    $category = pwg_db_fetch_assoc($result);
-
-    $url_params['section'] = 'categories';
-    $url_params['category'] = $category;
-  }
-
-  sync_metadata(array($image_id));
-
-  return array(
-    'image_id' => $image_id,
-    'url' => make_picture_url($url_params),
-  );
-}
-
-function ws_images_upload($params, $service)
+function community_test_ws_images_upload($params, $service)
 {
   if (isset($GLOBALS['community_ws_images_upload_delegate']))
   {
@@ -328,7 +200,7 @@ function ws_images_upload($params, $service)
   );
 }
 
-function ws_images_uploadAsync($params, $service)
+function community_test_ws_images_uploadAsync($params, $service)
 {
   if (isset($GLOBALS['community_ws_images_upload_async_delegate']))
   {
@@ -394,7 +266,7 @@ function community_test_delete_path($path)
 
 function community_test_reset_runtime()
 {
-  global $conf, $user, $community;
+  global $conf, $user, $community, $logger;
 
   if (!empty($GLOBALS['community_test']['temporary_files']))
   {
@@ -408,6 +280,7 @@ function community_test_reset_runtime()
   }
 
   community_test_delete_path('/tmp/community-upload-tests/buffer/community-upload-async');
+  community_test_delete_path('/tmp/community-upload-tests/buffer/community-legacy-add');
 
   if (session_status() !== PHP_SESSION_ACTIVE)
   {
@@ -418,15 +291,20 @@ function community_test_reset_runtime()
   $GLOBALS['community_test'] = array(
     'queries' => array(),
     'escaped_values' => array(),
+    'debug_logs' => array(),
     'fetch_row_args' => array(),
     'fetch_row_returns' => array(),
     'fetch_assoc_return' => array(),
     'query2array_returns' => array(),
+    'num_rows_returns' => array(),
     'status_headers' => array(),
     'is_admin' => false,
     'add_uploaded_file_calls' => array(),
     'single_updates' => array(),
     'tag_updates' => array(),
+    'set_tag_calls' => array(),
+    'mass_inserts' => array(),
+    'update_category_calls' => array(),
     'metadata_sync_calls' => array(),
     'picture_urls' => array(),
     'invalidate_user_cache_calls' => 0,
@@ -438,7 +316,8 @@ function community_test_reset_runtime()
     $GLOBALS['community_ws_images_add_chunk_delegate'],
     $GLOBALS['community_ws_images_add_simple_delegate'],
     $GLOBALS['community_ws_images_upload_delegate'],
-    $GLOBALS['community_ws_images_upload_async_delegate']
+    $GLOBALS['community_ws_images_upload_async_delegate'],
+    $GLOBALS['community_test_write_json_file_callback']
   );
 
   $_GET = array();
@@ -464,6 +343,7 @@ function community_test_reset_runtime()
   );
 
   $community = array();
+  $logger = new CommunityTestLogger();
 }
 
 function community_test_register_core_upload_methods($arr)
@@ -564,7 +444,7 @@ function community_test_register_core_upload_methods($arr)
 
   $service->addMethod(
     'pwg.images.upload',
-    'ws_images_upload',
+    'community_test_ws_images_upload',
     array(
       'name' => array('default' => null),
       'category' => array(
@@ -596,7 +476,7 @@ function community_test_register_core_upload_methods($arr)
 
   $service->addMethod(
     'pwg.images.uploadAsync',
-    'ws_images_uploadAsync',
+    'community_test_ws_images_uploadAsync',
     array(
       'chunk' => array('type' => WS_TYPE_INT | WS_TYPE_POSITIVE),
       'chunk_sum' => array(),

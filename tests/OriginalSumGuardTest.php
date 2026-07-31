@@ -664,6 +664,93 @@ class OriginalSumGuardTest extends TestCase
     $this->assertFileExists($paths['receipt_file']);
   }
 
+  public function testNonAdminUploadAsyncLifecycleSuccessfulReceiptWriteFailureFallsBackToCompletedManifest()
+  {
+    $chunkContents = 'single-chunk';
+    $params = array(
+      'chunk' => 1,
+      'chunk_sum' => md5($chunkContents),
+      'chunks' => 1,
+      'original_sum' => md5($chunkContents),
+      'category' => '1',
+      'filename' => 'upload.jpg',
+    );
+
+    $service = community_test_build_service('pwg.images.uploadAsync', $params);
+
+    $delegateCalls = 0;
+    $GLOBALS['community_ws_images_upload_async_delegate'] = function () use (&$delegateCalls) {
+      $delegateCalls++;
+      return array('image_id' => 700, 'message' => 'complete');
+    };
+    $GLOBALS['community_test_write_json_file_callback'] = function ($filepath) {
+      if ('receipt.json' === basename($filepath))
+      {
+        return false;
+      }
+
+      return null;
+    };
+
+    $_FILES['file'] = community_test_create_uploaded_chunk($chunkContents);
+    $firstResult = $service->invoke('pwg.images.uploadAsync', $params);
+
+    $paths = $this->getUploadAsyncStatePaths($params);
+    $storedManifest = community_read_json_file($paths['manifest_file']);
+
+    $_FILES['file'] = community_test_create_uploaded_chunk($chunkContents);
+    $retryResult = $service->invoke('pwg.images.uploadAsync', $params);
+
+    $this->assertSame(array('image_id' => 700, 'message' => 'complete'), $firstResult);
+    $this->assertSame($firstResult, $retryResult);
+    $this->assertSame(1, $delegateCalls);
+    $this->assertFileDoesNotExist($paths['receipt_file']);
+    $this->assertFileDoesNotExist($paths['chunks_dir']);
+    $this->assertIsArray($storedManifest);
+    $this->assertSame($params['filename'], $storedManifest['completed_request']['filename']);
+    $this->assertSame($firstResult, $storedManifest['completed_result']);
+  }
+
+  public function testUploadAsyncCleanupArtifactsKeepsLockPathUntilPostUnlockCleanup()
+  {
+    $params = $this->buildUploadAsyncParams();
+    $paths = $this->getUploadAsyncStatePaths($params);
+    $manifest = array(
+      'original_sum' => $params['original_sum'],
+      'user_id' => 2,
+      'chunks' => 2,
+    );
+
+    $this->assertTrue(community_ensure_directory($paths['state_dir']));
+    $this->assertTrue(community_ensure_directory($paths['chunks_dir']));
+    file_put_contents($paths['lock_file'], 'lock');
+    file_put_contents($paths['manifest_file'], json_encode(array('expires_at' => time() - 1)));
+    file_put_contents($paths['receipt_file'], json_encode(array('expires_at' => time() - 1)));
+    file_put_contents($paths['merged_file'], 'merged');
+    file_put_contents($paths['chunks_dir'].'/000000.chunk', 'chunk');
+
+    $lockHandle = fopen($paths['lock_file'], 'c+');
+    $this->assertNotFalse($lockHandle);
+    $this->assertTrue(flock($lockHandle, LOCK_EX));
+
+    community_cleanup_upload_async_artifacts($manifest, $paths, true);
+
+    $this->assertFileExists($paths['lock_file']);
+    $this->assertDirectoryExists($paths['state_dir']);
+    $this->assertFileDoesNotExist($paths['manifest_file']);
+    $this->assertFileDoesNotExist($paths['receipt_file']);
+    $this->assertFileDoesNotExist($paths['merged_file']);
+    $this->assertFileDoesNotExist($paths['chunks_dir']);
+
+    flock($lockHandle, LOCK_UN);
+    fclose($lockHandle);
+
+    community_cleanup_upload_async_state_directory($paths);
+
+    $this->assertFileDoesNotExist($paths['lock_file']);
+    $this->assertDirectoryDoesNotExist($paths['state_dir']);
+  }
+
   public function testNonAdminUploadAsyncLifecycleExpiresStateAndCleansOnlyExactArtifacts()
   {
     $service = community_test_build_service(
@@ -1451,6 +1538,204 @@ class OriginalSumGuardTest extends TestCase
     $this->assertTrue($result);
     $this->assertSame(1, $delegateCalls);
     $this->assertSame(array(), $GLOBALS['community_test']['queries']);
+  }
+
+  public function testNonAdminLegacyAddLifecycleAuthorizedCategoryFinalizesWithoutStatusElevation()
+  {
+    global $user;
+
+    $chunkContents = 'legacy-upload-chunk';
+    $originalSum = md5($chunkContents);
+    $service = community_test_build_service('pwg.images.addChunk');
+    $statusBefore = $user['status'];
+    $GLOBALS['community_test']['fetch_assoc_return'] = array(
+      array(
+        'id' => 1,
+        'name' => 'Allowed album',
+        'permalink' => 'allowed-album',
+      ),
+    );
+
+    $chunkResult = $service->invoke('pwg.images.addChunk', array(
+      'data' => base64_encode($chunkContents),
+      'original_sum' => $originalSum,
+      'position' => 0,
+    ));
+
+    $addResult = $service->invoke('pwg.images.add', array(
+      'original_sum' => $originalSum,
+      'original_filename' => 'legacy.jpg',
+      'categories' => '1',
+      'check_uniqueness' => false,
+    ));
+
+    $this->assertTrue($chunkResult);
+    $this->assertSame('normal', $user['status']);
+    $this->assertSame($statusBefore, $user['status']);
+    $this->assertSame(1, $addResult['image_id']);
+    $this->assertSame('picture-url-1', $addResult['url']);
+    $this->assertCount(1, $GLOBALS['community_test']['add_uploaded_file_calls']);
+    $this->assertNull($GLOBALS['community_test']['add_uploaded_file_calls'][0]['categories']);
+    $this->assertSame($statusBefore, $user['status']);
+  }
+
+  public function testNonAdminLegacyAddLifecycleRejectsUnauthorizedCategoryWithoutPersistingImage()
+  {
+    $chunkContents = 'legacy-upload-chunk';
+    $originalSum = md5($chunkContents);
+    $service = community_test_build_service('pwg.images.addChunk');
+
+    $chunkResult = $service->invoke('pwg.images.addChunk', array(
+      'data' => base64_encode($chunkContents),
+      'original_sum' => $originalSum,
+      'position' => 0,
+    ));
+
+    $addResult = $service->invoke('pwg.images.add', array(
+      'original_sum' => $originalSum,
+      'original_filename' => 'legacy.jpg',
+      'categories' => '2',
+      'check_uniqueness' => false,
+    ));
+
+    $this->assertTrue($chunkResult);
+    $this->assertInstanceOf(PwgError::class, $addResult);
+    $this->assertSame(401, $addResult->code());
+    $this->assertSame('Access denied', $addResult->message());
+    $this->assertSame(array(), $GLOBALS['community_test']['add_uploaded_file_calls']);
+  }
+
+  public function testNonAdminLegacyAddLifecycleRejectsMixedAuthorizedAndUnauthorizedCategoriesAtomically()
+  {
+    $chunkContents = 'legacy-upload-chunk';
+    $originalSum = md5($chunkContents);
+    $service = community_test_build_service('pwg.images.addChunk');
+
+    $service->invoke('pwg.images.addChunk', array(
+      'data' => base64_encode($chunkContents),
+      'original_sum' => $originalSum,
+      'position' => 0,
+    ));
+
+    $addResult = $service->invoke('pwg.images.add', array(
+      'original_sum' => $originalSum,
+      'original_filename' => 'legacy.jpg',
+      'categories' => '1;2',
+      'check_uniqueness' => false,
+    ));
+
+    $this->assertInstanceOf(PwgError::class, $addResult);
+    $this->assertSame(401, $addResult->code());
+    $this->assertSame(array(), $GLOBALS['community_test']['add_uploaded_file_calls']);
+  }
+
+  public function testNonAdminLegacyAddLifecycleAllowsReplacementOfOwnersOwnImage()
+  {
+    $chunkContents = 'legacy-upload-chunk';
+    $originalSum = md5($chunkContents);
+    $service = community_test_build_service('pwg.images.addChunk');
+    $GLOBALS['community_test']['fetch_row_returns'] = array(
+      array('1'),
+    );
+    $GLOBALS['community_test']['fetch_assoc_return'] = array(
+      array(
+        'id' => 1,
+        'name' => 'Allowed album',
+        'permalink' => 'allowed-album',
+      ),
+    );
+
+    $service->invoke('pwg.images.addChunk', array(
+      'data' => base64_encode($chunkContents),
+      'original_sum' => $originalSum,
+      'position' => 0,
+    ));
+
+    $result = $service->invoke('pwg.images.add', array(
+      'original_sum' => $originalSum,
+      'original_filename' => 'legacy.jpg',
+      'categories' => '1',
+      'check_uniqueness' => false,
+      'image_id' => 77,
+    ));
+
+    $this->assertSame(77, $result['image_id']);
+    $this->assertCount(1, $GLOBALS['community_test']['add_uploaded_file_calls']);
+    $this->assertSame(77, $GLOBALS['community_test']['add_uploaded_file_calls'][0]['image_id']);
+    $this->assertStringContainsString('WHERE id = 77', $GLOBALS['community_test']['queries'][0]);
+    $this->assertStringContainsString('added_by` = 2', $GLOBALS['community_test']['queries'][0]);
+  }
+
+  public function testGenericUserLegacyAddLifecycleLimitsReplacementToCurrentSession()
+  {
+    global $user;
+
+    $chunkContents = 'legacy-upload-chunk';
+    $originalSum = md5($chunkContents);
+    $service = community_test_build_service('pwg.images.addChunk');
+    $user['status'] = 'generic';
+    $GLOBALS['community_test']['fetch_row_returns'] = array(
+      array('1'),
+      array('0'),
+    );
+
+    $service->invoke('pwg.images.addChunk', array(
+      'data' => base64_encode($chunkContents),
+      'original_sum' => $originalSum,
+      'position' => 0,
+    ));
+
+    $result = $service->invoke('pwg.images.add', array(
+      'original_sum' => $originalSum,
+      'original_filename' => 'legacy.jpg',
+      'categories' => '1',
+      'check_uniqueness' => false,
+      'image_id' => 77,
+    ));
+
+    $this->assertInstanceOf(PwgError::class, $result);
+    $this->assertSame(401, $result->code());
+    $this->assertSame('Access denied', $result->message());
+    $this->assertSame(array(), $GLOBALS['community_test']['add_uploaded_file_calls']);
+    $this->assertCount(2, $GLOBALS['community_test']['queries']);
+    $this->assertStringContainsString('session_idx', $GLOBALS['community_test']['queries'][1]);
+  }
+
+  public function testNonAdminLegacyAddLifecycleDifferentUserCannotReuseBufferedChunks()
+  {
+    global $user;
+
+    $chunkContents = 'legacy-upload-chunk';
+    $originalSum = md5($chunkContents);
+    $service = community_test_build_service('pwg.images.addChunk');
+
+    $chunkResult = $service->invoke('pwg.images.addChunk', array(
+      'data' => base64_encode($chunkContents),
+      'original_sum' => $originalSum,
+      'position' => 0,
+    ));
+
+    $user['id'] = 3;
+    $_SESSION['community_user_id'] = 3;
+    $_SESSION['community_user_permissions'] = array(
+      'upload_categories' => array(1),
+      'create_categories' => array(),
+      'create_whole_gallery' => false,
+      'permission_ids' => array(22),
+      'user_album' => false,
+    );
+
+    $addResult = $service->invoke('pwg.images.add', array(
+      'original_sum' => $originalSum,
+      'original_filename' => 'legacy.jpg',
+      'categories' => '1',
+      'check_uniqueness' => false,
+    ));
+
+    $this->assertTrue($chunkResult);
+    $this->assertInstanceOf(PwgError::class, $addResult);
+    $this->assertSame(401, $addResult->code());
+    $this->assertSame(array(), $GLOBALS['community_test']['add_uploaded_file_calls']);
   }
 
   public function testFilenameUniquenessUsesEscapedPluginQueryAndDelegatesOnce()

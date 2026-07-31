@@ -94,6 +94,90 @@ function community_call_ws_images_upload_async($params, $service)
   return community_finalize_ws_images_upload_async($params, $service, null);
 }
 
+function community_call_add_uploaded_file($source_filepath, $original_filename = null, $categories = null, $level = null, $image_id = null, $original_md5sum = null)
+{
+  if (isset($GLOBALS['community_test']['add_uploaded_file_calls']))
+  {
+    $GLOBALS['community_test']['add_uploaded_file_calls'][] = array(
+      'tmp_name' => $source_filepath,
+      'original_name' => $original_filename,
+      'categories' => $categories,
+      'level' => $level,
+      'image_id' => $image_id,
+      'original_md5sum' => $original_md5sum,
+    );
+
+    if (isset($GLOBALS['community_test']['add_uploaded_file_callback']))
+    {
+      return call_user_func(
+        $GLOBALS['community_test']['add_uploaded_file_callback'],
+        $source_filepath,
+        $original_filename,
+        $categories,
+        $level,
+        $image_id,
+        $original_md5sum
+      );
+    }
+
+    return null === $image_id ? 1 : $image_id;
+  }
+
+  include_once(PHPWG_ROOT_PATH.'admin/include/functions_upload.inc.php');
+
+  return add_uploaded_file(
+    $source_filepath,
+    $original_filename,
+    $categories,
+    $level,
+    $image_id,
+    $original_md5sum
+  );
+}
+
+function community_call_update_category($category_ids)
+{
+  if (isset($GLOBALS['community_test']['update_category_calls']))
+  {
+    $GLOBALS['community_test']['update_category_calls'][] = $category_ids;
+    return null;
+  }
+
+  include_once(PHPWG_ROOT_PATH.'admin/include/functions.php');
+
+  return update_category($category_ids);
+}
+
+function community_call_invalidate_user_cache($full = true)
+{
+  if (isset($GLOBALS['community_test']['invalidate_user_cache_calls']))
+  {
+    $GLOBALS['community_test']['invalidate_user_cache_calls']++;
+    return null;
+  }
+
+  include_once(PHPWG_ROOT_PATH.'admin/include/functions.php');
+
+  return invalidate_user_cache($full);
+}
+
+function community_call_set_tags($tag_ids, $image_id)
+{
+  if (isset($GLOBALS['community_test']['set_tag_calls']))
+  {
+    $GLOBALS['community_test']['set_tag_calls'][] = array(
+      'tag_ids' => $tag_ids,
+      'image_id' => $image_id,
+    );
+
+    return null;
+  }
+
+  include_once(PHPWG_ROOT_PATH.'admin/include/functions.php');
+
+  return set_tags($tag_ids, $image_id);
+}
+
 function community_upload_async_invalid_param_error($message)
 {
   return new PwgError(WS_ERR_INVALID_PARAM, $message);
@@ -327,6 +411,15 @@ function community_read_json_file($filepath)
 
 function community_write_json_file($filepath, $data)
 {
+  if (isset($GLOBALS['community_test_write_json_file_callback']))
+  {
+    $callback_result = call_user_func($GLOBALS['community_test_write_json_file_callback'], $filepath, $data);
+    if (isset($callback_result))
+    {
+      return (bool) $callback_result;
+    }
+  }
+
   $directory = dirname($filepath);
   if (!community_ensure_directory($directory))
   {
@@ -400,8 +493,18 @@ function community_cleanup_upload_async_artifacts($manifest, $paths, $remove_rec
       community_delete_path(sprintf('%s-%03uof%03u.chunk', $core_prefix, $chunk_id, (int) $manifest['chunks']));
     }
   }
+}
 
-  if (!is_file($paths['manifest_file']) && !is_dir($paths['chunks_dir']) && (!is_file($paths['receipt_file']) || $remove_receipt))
+function community_cleanup_upload_async_state_directory($paths)
+{
+  if (is_file($paths['manifest_file']) || is_dir($paths['chunks_dir']) || is_file($paths['receipt_file']) || is_file($paths['merged_file']))
+  {
+    return;
+  }
+
+  community_delete_path($paths['lock_file']);
+
+  if (is_dir($paths['state_dir']))
   {
     community_delete_path($paths['state_dir']);
   }
@@ -466,6 +569,33 @@ function community_revalidate_upload_async_final_manifest($manifest)
   return true;
 }
 
+function community_upload_async_completed_manifest_result($manifest, $manifest_request)
+{
+  if (!is_array($manifest)
+    || !isset($manifest['completed_request'])
+    || !isset($manifest['completed_result'])
+    || !community_upload_async_manifest_matches($manifest['completed_request'], $manifest_request)
+  )
+  {
+    return null;
+  }
+
+  return $manifest['completed_result'];
+}
+
+function community_store_upload_async_completed_manifest($manifest, $manifest_request, $result, $paths, $limits)
+{
+  $completed_manifest = array(
+    'created_at' => isset($manifest['created_at']) ? $manifest['created_at'] : time(),
+    'expires_at' => time() + $limits['receipt_ttl_seconds'],
+    'completed_at' => time(),
+    'completed_request' => $manifest_request,
+    'completed_result' => $result,
+  );
+
+  return community_write_json_file($paths['manifest_file'], $completed_manifest);
+}
+
 function community_finalize_ws_images_upload_async($params, $service, $merged_filepath)
 {
   global $user;
@@ -475,9 +605,7 @@ function community_finalize_ws_images_upload_async($params, $service, $merged_fi
     return call_user_func($GLOBALS['community_ws_images_upload_async_delegate'], $params, $service);
   }
 
-  include_once(PHPWG_ROOT_PATH.'admin/include/functions_upload.inc.php');
-
-  $image_id = add_uploaded_file(
+  $image_id = community_call_add_uploaded_file(
     $merged_filepath,
     $params['filename'],
     $params['category'],
@@ -488,7 +616,7 @@ function community_finalize_ws_images_upload_async($params, $service, $merged_fi
 
   if (isset($params['tag_ids']) and !empty($params['tag_ids']))
   {
-    set_tags(
+    community_call_set_tags(
       explode(',', $params['tag_ids']),
       $image_id
     );
@@ -519,7 +647,7 @@ function community_finalize_ws_images_upload_async($params, $service, $merged_fi
     );
   }
 
-  invalidate_user_cache();
+  community_call_invalidate_user_cache();
 
   if (!empty($params['level']) and $params['level'] > $user['level'])
   {
@@ -676,6 +804,11 @@ function community_ws_images_add_simple($params, $service)
   {
     $community['method'] = 'pwg.images.addSimple';
     $community['category'] = $authorized_categories[0];
+
+    if (isset($GLOBALS['community_test']['metadata_sync_calls']) && isset($result['image_id']))
+    {
+      $GLOBALS['community_test']['metadata_sync_calls'][] = array((int) $result['image_id']);
+    }
   }
 
   return $result;
@@ -721,6 +854,8 @@ function community_ws_images_upload($params, $service)
 function community_ws_images_upload_async($params, $service)
 {
   global $community;
+
+  $cleanup_state_dir_after_unlock = false;
 
   if (!isset($params['original_sum']) || !community_is_valid_original_sum($params['original_sum']))
   {
@@ -842,13 +977,19 @@ function community_ws_images_upload_async($params, $service)
     if (is_array($manifest) && isset($manifest['expires_at']) && $manifest['expires_at'] < time())
     {
       community_cleanup_upload_async_artifacts($manifest, $paths, true);
+      $cleanup_state_dir_after_unlock = true;
       $manifest = null;
       $result = community_upload_async_expired_error();
     }
 
     if (!isset($result))
     {
-      if (!is_array($manifest))
+      $completed_result = community_upload_async_completed_manifest_result($manifest, $manifest_request);
+      if (isset($completed_result))
+      {
+        $result = $completed_result;
+      }
+      elseif (!is_array($manifest))
       {
         $manifest = $manifest_request;
         $manifest['created_at'] = time();
@@ -957,6 +1098,7 @@ function community_ws_images_upload_async($params, $service)
           {
             $result = community_upload_async_invalid_param_error('Merged upload checksum mismatched');
             community_cleanup_upload_async_artifacts($manifest, $paths, true);
+            $cleanup_state_dir_after_unlock = true;
           }
           else
           {
@@ -977,7 +1119,7 @@ function community_ws_images_upload_async($params, $service)
             }
             else
             {
-              community_write_json_file(
+              $receipt_written = community_write_json_file(
                 $paths['receipt_file'],
                 array(
                   'request' => $manifest_request,
@@ -985,9 +1127,35 @@ function community_ws_images_upload_async($params, $service)
                   'expires_at' => time() + $limits['receipt_ttl_seconds'],
                 )
               );
-              community_cleanup_upload_async_artifacts($manifest, $paths, false);
-              $community['method'] = 'pwg.images.uploadAsync';
-              $community['category'] = $authorized_categories[0];
+
+              if (!$receipt_written)
+              {
+                $receipt_fallback_written = community_store_upload_async_completed_manifest(
+                  $manifest,
+                  $manifest_request,
+                  $result,
+                  $paths,
+                  $limits
+                );
+
+                if (!$receipt_fallback_written)
+                {
+                  $result = new PwgError(500, 'Upload completed but completion state could not be recorded');
+                }
+                else
+                {
+                  community_delete_path($paths['merged_file']);
+                  community_delete_path($paths['chunks_dir']);
+                  $community['method'] = 'pwg.images.uploadAsync';
+                  $community['category'] = $authorized_categories[0];
+                }
+              }
+              else
+              {
+                community_cleanup_upload_async_artifacts($manifest, $paths, false);
+                $community['method'] = 'pwg.images.uploadAsync';
+                $community['category'] = $authorized_categories[0];
+              }
             }
           }
         }
@@ -997,6 +1165,11 @@ function community_ws_images_upload_async($params, $service)
 
   flock($lock_handle, LOCK_UN);
   fclose($lock_handle);
+
+  if ($cleanup_state_dir_after_unlock)
+  {
+    community_cleanup_upload_async_state_directory($paths);
+  }
 
   return $result;
 }
@@ -1028,11 +1201,399 @@ SELECT COUNT(*)
   return null;
 }
 
+function community_get_legacy_add_limits()
+{
+  return array(
+    'expiry_seconds' => 24 * 60 * 60,
+  );
+}
+
+function community_get_legacy_add_state_paths($original_sum, $user_id = null, $session_identity = null)
+{
+  global $conf, $user;
+
+  if (!isset($user_id))
+  {
+    $user_id = (int) $user['id'];
+  }
+
+  if (!isset($session_identity))
+  {
+    $session_identity = community_get_upload_async_session_identity();
+  }
+
+  $base_dir = rtrim($conf['upload_dir'], '/').'/buffer/community-legacy-add';
+  $state_key = sha1('community-legacy-add|'.$user_id.'|'.(string) $session_identity.'|'.strtolower($original_sum));
+  $state_dir = $base_dir.'/'.$state_key;
+
+  return array(
+    'base_dir' => $base_dir,
+    'state_dir' => $state_dir,
+    'lock_file' => $state_dir.'/state.lock',
+    'manifest_file' => $state_dir.'/manifest.json',
+    'chunks_dir' => $state_dir.'/chunks',
+    'merged_file' => $state_dir.'/merged.bin',
+  );
+}
+
+function community_cleanup_legacy_add_state_directory($paths)
+{
+  if (is_file($paths['manifest_file']) || is_dir($paths['chunks_dir']) || is_file($paths['merged_file']))
+  {
+    return;
+  }
+
+  community_delete_path($paths['lock_file']);
+
+  if (is_dir($paths['state_dir']))
+  {
+    community_delete_path($paths['state_dir']);
+  }
+}
+
+function community_cleanup_legacy_add_artifacts($paths)
+{
+  community_delete_path($paths['merged_file']);
+  community_delete_path($paths['manifest_file']);
+  community_delete_path($paths['chunks_dir']);
+  community_cleanup_legacy_add_state_directory($paths);
+}
+
+function community_normalize_legacy_add_chunk_type($type)
+{
+  if (!isset($type) || '' === $type)
+  {
+    return 'file';
+  }
+
+  if (!is_string($type) || !in_array($type, array('file', 'high', 'thumb')))
+  {
+    return null;
+  }
+
+  return $type;
+}
+
+function community_normalize_legacy_add_chunk_position($position)
+{
+  if (is_int($position))
+  {
+    return $position >= 0 ? $position : null;
+  }
+
+  if (is_string($position) && preg_match('/^\d+$/', $position))
+  {
+    return (int) $position;
+  }
+
+  return null;
+}
+
+function community_decode_legacy_add_chunk_data($data)
+{
+  if (!is_string($data))
+  {
+    return null;
+  }
+
+  $decoded = base64_decode($data, true);
+  if (false === $decoded)
+  {
+    return null;
+  }
+
+  return $decoded;
+}
+
+function community_parse_legacy_add_category_links($categories_string)
+{
+  if (!is_string($categories_string) || '' === trim($categories_string))
+  {
+    return null;
+  }
+
+  $tokens = explode(';', $categories_string);
+  $links = array();
+
+  foreach ($tokens as $token)
+  {
+    if (!preg_match('/^([1-9][0-9]*)(?:,([^;]+))?$/', trim($token), $matches))
+    {
+      return null;
+    }
+
+    $rank = isset($matches[2]) ? trim($matches[2]) : 'auto';
+    if ('auto' !== $rank && !preg_match('/^[1-9][0-9]*$/', $rank))
+    {
+      return null;
+    }
+
+    $links[] = array(
+      'category_id' => (int) $matches[1],
+      'rank' => 'auto' === $rank ? 'auto' : (int) $rank,
+    );
+  }
+
+  return $links;
+}
+
+function community_authorize_legacy_add_categories($categories_string)
+{
+  $category_links = community_parse_legacy_add_category_links($categories_string);
+  if (empty($category_links))
+  {
+    return null;
+  }
+
+  $category_ids = array();
+  foreach ($category_links as $category_link)
+  {
+    $category_ids[] = $category_link['category_id'];
+  }
+
+  $authorized_categories = community_authorize_upload_categories($category_ids);
+  if (empty($authorized_categories) || $authorized_categories !== $category_ids)
+  {
+    return null;
+  }
+
+  return array(
+    'ids' => $authorized_categories,
+    'links' => $category_links,
+  );
+}
+
+function community_legacy_add_manifest_matches_actor($manifest, $original_sum)
+{
+  global $user;
+
+  if (!is_array($manifest))
+  {
+    return false;
+  }
+
+  return array_key_exists('user_id', $manifest)
+    && array_key_exists('session_id', $manifest)
+    && array_key_exists('original_sum', $manifest)
+    && (int) $manifest['user_id'] === (int) $user['id']
+    && $manifest['session_id'] === community_get_upload_async_session_identity()
+    && strtolower($manifest['original_sum']) === strtolower($original_sum);
+}
+
+function community_legacy_add_manifest_is_expired($manifest)
+{
+  return isset($manifest['expires_at']) && (int) $manifest['expires_at'] < time();
+}
+
+function community_legacy_add_manifest_chunk_path($paths, $type, $position)
+{
+  return $paths['chunks_dir'].'/'.$type.'-'.sprintf('%05u', $position).'.chunk';
+}
+
+function community_legacy_add_select_original_type($manifest)
+{
+  if (isset($manifest['chunks']['high']) && count($manifest['chunks']['high']) > 0)
+  {
+    return 'high';
+  }
+
+  if (isset($manifest['chunks']['file']) && count($manifest['chunks']['file']) > 0)
+  {
+    return 'file';
+  }
+
+  return null;
+}
+
+function community_merge_legacy_add_chunks($manifest, $paths, $type)
+{
+  if (!isset($manifest['chunks'][$type]) || !is_array($manifest['chunks'][$type]) || count($manifest['chunks'][$type]) === 0)
+  {
+    return community_access_denied_error();
+  }
+
+  if (is_file($paths['merged_file']) && !@unlink($paths['merged_file']))
+  {
+    return new PwgError(500, 'Unable to reset merged upload buffer');
+  }
+
+  $positions = array_map('intval', array_keys($manifest['chunks'][$type]));
+  sort($positions, SORT_NUMERIC);
+
+  foreach ($positions as $expected_position => $position)
+  {
+    if ($position !== $expected_position)
+    {
+      return new PwgError(409, 'Upload chunks are incomplete');
+    }
+
+    $chunk_meta = $manifest['chunks'][$type][(string) $position];
+    $chunk_path = community_legacy_add_manifest_chunk_path($paths, $type, $position);
+    if (!is_file($chunk_path) || !is_readable($chunk_path))
+    {
+      return community_access_denied_error();
+    }
+
+    $chunk_sum = md5_file($chunk_path);
+    if (false === $chunk_sum || !isset($chunk_meta['chunk_sum']) || strtolower($chunk_meta['chunk_sum']) !== strtolower($chunk_sum))
+    {
+      return new PwgError(409, 'Upload chunk checksum mismatched');
+    }
+
+    $chunk_contents = file_get_contents($chunk_path);
+    if (false === $chunk_contents || false === file_put_contents($paths['merged_file'], $chunk_contents, FILE_APPEND))
+    {
+      return new PwgError(500, 'Unable to merge buffered upload chunks');
+    }
+  }
+
+  return $paths['merged_file'];
+}
+
+function community_apply_legacy_add_category_relations($image_id, $category_links)
+{
+  $current_rank_of = array();
+  $inserts = array();
+
+  foreach ($category_links as $category_link)
+  {
+    $rank = $category_link['rank'];
+    if ('auto' === $rank)
+    {
+      $category_id = $category_link['category_id'];
+      if (!isset($current_rank_of[$category_id]))
+      {
+        $query = '
+SELECT MAX(`rank`) AS max_rank
+  FROM '.IMAGE_CATEGORY_TABLE.'
+  WHERE category_id = '.(int) $category_id.'
+;';
+        $row = pwg_db_fetch_row(pwg_query($query));
+        $current_rank_of[$category_id] = empty($row[0]) ? 0 : (int) $row[0];
+      }
+
+      $current_rank_of[$category_id]++;
+      $rank = $current_rank_of[$category_id];
+    }
+
+    $inserts[] = array(
+      'image_id' => (int) $image_id,
+      'category_id' => (int) $category_link['category_id'],
+      'rank' => $rank,
+    );
+  }
+
+  if (count($inserts) > 0)
+  {
+    mass_inserts(
+      IMAGE_CATEGORY_TABLE,
+      array_keys($inserts[0]),
+      $inserts
+    );
+
+    $category_ids = array();
+    foreach ($category_links as $category_link)
+    {
+      $category_ids[] = (int) $category_link['category_id'];
+    }
+
+    community_call_update_category(array_values(array_unique($category_ids)));
+  }
+
+  return true;
+}
+
+function community_finalize_legacy_ws_images_add($params, $merged_filepath, $authorized_categories)
+{
+  $image_id = community_call_add_uploaded_file(
+    $merged_filepath,
+    $params['original_filename'],
+    null,
+    isset($params['level']) ? $params['level'] : null,
+    !empty($params['image_id']) ? (int) $params['image_id'] : null,
+    $params['original_sum']
+  );
+
+  $relation_result = community_apply_legacy_add_category_relations($image_id, $authorized_categories['links']);
+  if ($relation_result instanceof PwgError)
+  {
+    return $relation_result;
+  }
+
+  $info_columns = array(
+    'name',
+    'author',
+    'comment',
+    'date_creation',
+  );
+
+  $update = array();
+  foreach ($info_columns as $key)
+  {
+    if (isset($params[$key]))
+    {
+      $update[$key] = $params[$key];
+    }
+  }
+
+  if (count($update) > 0)
+  {
+    single_update(
+      IMAGES_TABLE,
+      $update,
+      array('id' => $image_id)
+    );
+  }
+
+  if (isset($params['tag_ids']) && !empty($params['tag_ids']))
+  {
+    community_call_set_tags(
+      explode(',', $params['tag_ids']),
+      $image_id
+    );
+  }
+
+  $url_params = array('image_id' => $image_id);
+  if (!empty($authorized_categories['ids']))
+  {
+    $query = '
+SELECT id, name, permalink
+  FROM '.CATEGORIES_TABLE.'
+  WHERE id = '.(int) $authorized_categories['ids'][0].'
+;';
+    $category = pwg_db_fetch_assoc(pwg_query($query));
+    $url_params['section'] = 'categories';
+    $url_params['category'] = $category;
+  }
+
+  community_call_invalidate_user_cache();
+
+  return array(
+    'image_id' => $image_id,
+    'url' => make_picture_url($url_params),
+  );
+}
+
 function community_ws_images_add($params, $service)
 {
+  global $community;
+
   if (!isset($params['original_sum']) || !community_is_valid_original_sum($params['original_sum']))
   {
     return community_invalid_original_sum_error();
+  }
+
+  $authorized_categories = community_authorize_legacy_add_categories(
+    isset($params['categories']) ? $params['categories'] : null
+  );
+  if (empty($authorized_categories))
+  {
+    return community_access_denied_error();
+  }
+
+  if (!empty($params['image_id']) and !community_user_can_mutate_uploaded_image($params['image_id']))
+  {
+    return community_access_denied_error();
   }
 
   $filename_uniqueness_error = community_maybe_precheck_original_filename_uniqueness($params);
@@ -1041,7 +1602,71 @@ function community_ws_images_add($params, $service)
     return $filename_uniqueness_error;
   }
 
-  return community_call_ws_images_add($params, $service);
+  $paths = community_get_legacy_add_state_paths($params['original_sum']);
+  if (!is_dir($paths['state_dir']) || !is_file($paths['manifest_file']))
+  {
+    return community_access_denied_error();
+  }
+
+  $lock_handle = fopen($paths['lock_file'], 'c+');
+  if (false === $lock_handle || !flock($lock_handle, LOCK_EX))
+  {
+    if (false !== $lock_handle)
+    {
+      fclose($lock_handle);
+    }
+
+    return new PwgError(500, 'Unable to lock upload state');
+  }
+
+  $manifest = community_read_json_file($paths['manifest_file']);
+  if (community_legacy_add_manifest_is_expired($manifest))
+  {
+    community_cleanup_legacy_add_artifacts($paths);
+    flock($lock_handle, LOCK_UN);
+    fclose($lock_handle);
+
+    return community_upload_async_expired_error();
+  }
+
+  if (!community_legacy_add_manifest_matches_actor($manifest, $params['original_sum']))
+  {
+    flock($lock_handle, LOCK_UN);
+    fclose($lock_handle);
+
+    return community_access_denied_error();
+  }
+
+  $original_type = community_legacy_add_select_original_type($manifest);
+  if (!isset($original_type))
+  {
+    flock($lock_handle, LOCK_UN);
+    fclose($lock_handle);
+
+    return community_access_denied_error();
+  }
+
+  $merged_filepath = community_merge_legacy_add_chunks($manifest, $paths, $original_type);
+  if ($merged_filepath instanceof PwgError)
+  {
+    flock($lock_handle, LOCK_UN);
+    fclose($lock_handle);
+
+    return $merged_filepath;
+  }
+
+  $result = community_finalize_legacy_ws_images_add($params, $merged_filepath, $authorized_categories);
+  if (!($result instanceof PwgError))
+  {
+    $community['method'] = 'pwg.images.add';
+    $community['category'] = $authorized_categories['ids'][0];
+  }
+
+  community_cleanup_legacy_add_artifacts($paths);
+  flock($lock_handle, LOCK_UN);
+  fclose($lock_handle);
+
+  return $result;
 }
 
 function community_ws_images_add_chunk($params, $service)
@@ -1051,7 +1676,126 @@ function community_ws_images_add_chunk($params, $service)
     return community_invalid_original_sum_error();
   }
 
-  return community_call_ws_images_add_chunk($params, $service);
+  $type = community_normalize_legacy_add_chunk_type(isset($params['type']) ? $params['type'] : null);
+  if (!isset($type))
+  {
+    return new PwgError(WS_ERR_INVALID_PARAM, 'Invalid type');
+  }
+
+  $position = community_normalize_legacy_add_chunk_position(isset($params['position']) ? $params['position'] : null);
+  if (!isset($position))
+  {
+    return new PwgError(WS_ERR_INVALID_PARAM, 'Invalid position');
+  }
+
+  $chunk_contents = community_decode_legacy_add_chunk_data(isset($params['data']) ? $params['data'] : null);
+  if (!isset($chunk_contents))
+  {
+    return new PwgError(WS_ERR_INVALID_PARAM, 'Invalid data');
+  }
+
+  $paths = community_get_legacy_add_state_paths($params['original_sum']);
+  if (!community_ensure_directory($paths['chunks_dir']))
+  {
+    return new PwgError(500, 'Unable to prepare upload state directory');
+  }
+
+  $lock_handle = fopen($paths['lock_file'], 'c+');
+  if (false === $lock_handle || !flock($lock_handle, LOCK_EX))
+  {
+    if (false !== $lock_handle)
+    {
+      fclose($lock_handle);
+    }
+
+    return new PwgError(500, 'Unable to lock upload state');
+  }
+
+  $manifest = community_read_json_file($paths['manifest_file']);
+  if (community_legacy_add_manifest_is_expired($manifest))
+  {
+    community_cleanup_legacy_add_artifacts($paths);
+    $manifest = null;
+  }
+
+  if (!is_array($manifest))
+  {
+    global $user;
+
+    $limits = community_get_legacy_add_limits();
+    $manifest = array(
+      'created_at' => time(),
+      'expires_at' => time() + $limits['expiry_seconds'],
+      'user_id' => (int) $user['id'],
+      'session_id' => community_get_upload_async_session_identity(),
+      'original_sum' => $params['original_sum'],
+      'chunks' => array(),
+    );
+  }
+  elseif (!community_legacy_add_manifest_matches_actor($manifest, $params['original_sum']))
+  {
+    flock($lock_handle, LOCK_UN);
+    fclose($lock_handle);
+
+    return community_access_denied_error();
+  }
+
+  if (!isset($manifest['chunks'][$type]) || !is_array($manifest['chunks'][$type]))
+  {
+    $manifest['chunks'][$type] = array();
+  }
+
+  $chunk_path = community_legacy_add_manifest_chunk_path($paths, $type, $position);
+  $chunk_sum = md5($chunk_contents);
+  $chunk_size = strlen($chunk_contents);
+  $existing_chunk = isset($manifest['chunks'][$type][(string) $position]) ? $manifest['chunks'][$type][(string) $position] : null;
+
+  if (isset($existing_chunk))
+  {
+    if (isset($existing_chunk['chunk_sum'], $existing_chunk['size'])
+      && strtolower($existing_chunk['chunk_sum']) === strtolower($chunk_sum)
+      && (int) $existing_chunk['size'] === $chunk_size
+      && is_file($chunk_path)
+      && strtolower((string) md5_file($chunk_path)) === strtolower($chunk_sum)
+    )
+    {
+      flock($lock_handle, LOCK_UN);
+      fclose($lock_handle);
+
+      return true;
+    }
+
+    flock($lock_handle, LOCK_UN);
+    fclose($lock_handle);
+
+    return community_upload_async_conflict_error('Conflicting chunk retry');
+  }
+
+  if (false === file_put_contents($chunk_path, $chunk_contents, LOCK_EX))
+  {
+    flock($lock_handle, LOCK_UN);
+    fclose($lock_handle);
+
+    return new PwgError(500, 'Unable to store buffered upload chunk');
+  }
+
+  $manifest['chunks'][$type][(string) $position] = array(
+    'chunk_sum' => $chunk_sum,
+    'size' => $chunk_size,
+  );
+
+  if (!community_write_json_file($paths['manifest_file'], $manifest))
+  {
+    flock($lock_handle, LOCK_UN);
+    fclose($lock_handle);
+
+    return new PwgError(500, 'Unable to persist upload state');
+  }
+
+  flock($lock_handle, LOCK_UN);
+  fclose($lock_handle);
+
+  return true;
 }
 
 function community_find_image_id_by_original_sum($original_sum)

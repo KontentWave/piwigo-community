@@ -376,8 +376,6 @@ function community_switch_user_to_admin($arr)
   $methods = array();
   $methods[] = 'pwg.tags.add';
   $methods[] = 'pwg.images.exist';
-  $methods[] = 'pwg.images.add';
-  $methods[] = 'pwg.images.addChunk';
   $methods[] = 'pwg.images.checkUpload';
   $methods[] = 'pwg.images.checkFiles';
   $methods[] = 'pwg.session.getStatus';
@@ -567,8 +565,7 @@ function community_ws_replace_methods($arr)
     'Add an image.
 <br>pwg.images.addChunk must have been called before (maybe several times).
 <br>Don\'t use "thumbnail_sum" and "high_sum", these parameters are here for backward compatibility.',
-    null,
-    array('admin_only'=>true)
+    null
     );
 
   $service->addMethod(
@@ -619,7 +616,7 @@ function community_ws_replace_methods($arr)
     ),
     'Add a chunk of a file.',
     null,
-    array('admin_only' => true, 'post_only' => true)
+    array('post_only' => true)
     );
 
   $service->addMethod(
