@@ -354,16 +354,6 @@ var limit_storage = {$limit_storage};
         jQuery(".infos").append('<ul><li>'+sprintf(photosUploaded_label, uploadedPhotos.length, uploadCategory.label)+'</li></ul>');
 
         jQuery.ajax({
-          url: rootUrl + "ws.php?format=json&method=pwg.images.uploadCompleted",
-          type:"POST",
-          data: {
-            pwg_token: pwg_token,
-            image_id: uploadedPhotos.join(","),
-            category_id: uploadCategory.id,
-          }
-        });
-
-        jQuery.ajax({
           url: rootUrl + "ws.php?format=json&method=community.images.uploadCompleted",
           type:"POST",
           data: {
@@ -377,14 +367,16 @@ var limit_storage = {$limit_storage};
             if (data.result.pending.length > 0) {
               jQuery(".infos ul").append('<li>'+moderation_Label+'</li>');
             }
+
+            jQuery(".infos").show();
+            jQuery(".afterUploadActions").show();
           },
           error:function(XMLHttpRequest, textStatus, errorThrows) {
+            var completionFailed = errorThrows || textStatus;
+            jQuery(".errors ul").append('<li>'+completionFailed+'</li>');
+            jQuery(".errors").show();
           }
         });
-
-        jQuery(".infos").show();
-
-        jQuery(".afterUploadActions").show();
         jQuery('#uploadingActions').hide();
 
         // user can safely leave page without warning

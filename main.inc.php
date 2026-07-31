@@ -379,7 +379,6 @@ function community_switch_user_to_admin($arr)
   $methods[] = 'pwg.images.checkUpload';
   $methods[] = 'pwg.images.checkFiles';
   $methods[] = 'pwg.session.getStatus';
-  $methods[] = 'pwg.images.uploadCompleted';
 
   if (in_array($community['method'], array('pwg.images.delete', 'pwg.images.setInfo')))
   {
@@ -479,13 +478,15 @@ function community_add_methods($arr)
 
   $service->addMethod(
     'community.images.uploadCompleted',
-    'community_ws_images_uploadCompleted',
+    'community_ws_images_upload_completed_compat',
     array(
       'image_id' => array('flags'=>WS_PARAM_ACCEPT_ARRAY),
       'pwg_token' => array(),
       'category_id' => array('type'=>WS_TYPE_ID),
       ),
-    'Notify Piwigo the upload of several photos is completed. Tells if some photos are under moderation.'
+    'Notify Piwigo the upload of several photos is completed. Tells if some photos are under moderation.',
+    null,
+    array('post_only' => true)
     );
 }
 
@@ -512,6 +513,19 @@ function community_ws_replace_methods($arr)
   {
     return;
   }
+
+  $service->addMethod(
+    'pwg.images.uploadCompleted',
+    'community_ws_images_upload_completed',
+    array(
+      'image_id' => array('flags'=>WS_PARAM_ACCEPT_ARRAY),
+      'pwg_token' => array(),
+      'category_id' => array('type'=>WS_TYPE_ID),
+      ),
+    'Notify Piwigo you have finished uploading a set of photos.',
+    null,
+    array('post_only' => true)
+    );
 
   // the plugin Community is activated, the user has upload permissions, we
   // use a specific function to list available categories, assuming the user
@@ -902,120 +916,29 @@ function community_ws_session_getStatus($params, &$service)
   return $res;
 }
 
-/**
- * notify the admins some photos have been uploaded
- * returns the list of photos waiting for moderation
- */
-function community_ws_images_uploadCompleted($params, &$service)
+function community_ws_images_upload_completed($params, &$service)
 {
-  global $user, $conf;
-
-  if (get_pwg_token() != $params['pwg_token'])
+  $result = community_complete_upload($params);
+  if ($result instanceof PwgError)
   {
-    return new PwgError(403, 'Invalid security token');
+    return $result;
   }
 
-  if (!is_array($params['image_id']))
-  {
-    $params['image_id'] = preg_split(
-      '/[\s,;\|]/',
-      $params['image_id'],
-      -1,
-      PREG_SPLIT_NO_EMPTY
-      );
-  }
-  $params['image_id'] = array_map('intval', $params['image_id']);
+  return array(
+    'moved_from_lounge' => $result['moved_from_lounge'],
+    'category' => $result['category'],
+  );
+}
 
-  $image_ids = array();
-  foreach ($params['image_id'] as $image_id)
+function community_ws_images_upload_completed_compat($params, &$service)
+{
+  $result = community_complete_upload($params);
+  if ($result instanceof PwgError)
   {
-    if ($image_id > 0)
-    {
-      $image_ids[] = $image_id;
-    }
+    return $result;
   }
 
-  if (count($image_ids) == 0)
-  {
-    return;
-  }
-
-  $query = '
-SELECT
-    id,
-    level,
-    added_by,
-    state,
-    notified_on
-  FROM '.IMAGES_TABLE.'
-    LEFT JOIN '.COMMUNITY_PENDINGS_TABLE.' ON image_id = id
-  WHERE id IN ('.implode(',', $image_ids).')
-;';
-
-  $images = query2array($query);
-
-  $to_notify = array();
-  $to_notify_ids = array();
-  $pending = array();
-  foreach ($images as $image)
-  {
-    if (empty($image['notified_on']))
-    {
-      $to_notify[] = $image;
-      $to_notify_ids[] = $image['id'];
-    }
-
-    if ('moderation_pending' == $image['state'])
-    {
-      $pending[] = $image;
-    }
-  }
-
-  if (count($to_notify) > 0 and (!isset($conf['community_notify_admins']) or $conf['community_notify_admins']))
-  {
-    global $logger;
-    $logger->debug(__FUNCTION__." : enter notification part");
-    // time to notify admins
-    include_once(PHPWG_ROOT_PATH.'include/functions_mail.inc.php');
-
-    $category_infos = get_cat_info($params['category_id']);
-
-    $keyargs_content = array(
-      get_l10n_args('Hi administrators,', ''),
-      get_l10n_args('', ''),
-      get_l10n_args('Album: %s', get_cat_display_name($category_infos['upper_names'], null, false)),
-      get_l10n_args('User: %s', $user['username']),
-      get_l10n_args('Email: %s', $user['email']),
-      );
-
-    if (count($pending))
-    {
-      $keyargs_content[] = get_l10n_args('', '');
-
-      array_push(
-        $keyargs_content,
-        get_l10n_args(
-          'Validation page: %s',
-          get_absolute_root_url().'admin.php?page=plugin-community-pendings'
-          )
-        );
-    }
-
-    pwg_mail_notification_admins(
-      get_l10n_args('%d photos uploaded by %s', array(count($to_notify), $user['username'])),
-      $keyargs_content,
-      false
-      );
-
-    $query = '
-UPDATE '.COMMUNITY_PENDINGS_TABLE.'
-  SET notified_on = NOW()
-  WHERE image_id IN ('.implode(',', $to_notify_ids).')
-;';
-    pwg_query($query);
-  }
-
-  return array('pending' => $pending);
+  return array('pending' => $result['pending']);
 }
 
 add_event_handler('sendResponse', 'community_sendResponse');

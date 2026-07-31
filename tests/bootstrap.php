@@ -6,6 +6,7 @@ define('CATEGORIES_TABLE', 'piwigo_categories');
 define('IMAGE_CATEGORY_TABLE', 'piwigo_image_category');
 define('IMAGES_TABLE', 'piwigo_images');
 define('ACTIVITY_TABLE', 'piwigo_activity');
+define('LOUNGE_TABLE', 'piwigo_lounge');
 
 if (!defined('MKGETDIR_DEFAULT'))
 {
@@ -53,9 +54,44 @@ function l10n($message)
   return $message;
 }
 
+function get_l10n_args($key, $args = null)
+{
+  return array('key' => $key, 'args' => $args);
+}
+
 function get_root_url()
 {
   return '/';
+}
+
+function get_absolute_root_url()
+{
+  return 'https://example.test/';
+}
+
+function get_cat_info($category_id)
+{
+  if (isset($GLOBALS['community_test']['category_info']))
+  {
+    return $GLOBALS['community_test']['category_info'];
+  }
+
+  return array('id' => (int) $category_id, 'upper_names' => array('Album '.$category_id));
+}
+
+function get_cat_display_name($upper_names, $url = null, $single_link = false)
+{
+  return implode(' / ', $upper_names);
+}
+
+function get_cat_display_name_from_id($category_id, $url = null)
+{
+  return 'Album '.$category_id;
+}
+
+function empty_lounge()
+{
+  $GLOBALS['community_test']['empty_lounge_calls']++;
 }
 
 class CommunityTestLogger
@@ -100,6 +136,11 @@ function pwg_query($query)
 {
   $GLOBALS['community_test']['queries'][] = $query;
 
+  if (isset($GLOBALS['community_test']['query_callback']))
+  {
+    return call_user_func($GLOBALS['community_test']['query_callback'], $query);
+  }
+
   return $query;
 }
 
@@ -133,6 +174,11 @@ function pwg_db_num_rows($result)
 function query2array($query, $key_field = null, $value_field = null)
 {
   $GLOBALS['community_test']['queries'][] = $query;
+
+  if (isset($GLOBALS['community_test']['query2array_callback']))
+  {
+    return call_user_func($GLOBALS['community_test']['query2array_callback'], $query, $key_field, $value_field);
+  }
 
   if (!empty($GLOBALS['community_test']['query2array_returns']))
   {
@@ -321,6 +367,7 @@ function community_test_reset_runtime()
 
   community_test_delete_path('/tmp/community-upload-tests/buffer/community-upload-async');
   community_test_delete_path('/tmp/community-upload-tests/buffer/community-legacy-add');
+  community_test_delete_path('/tmp/community-upload-tests/buffer/community-upload-completion');
 
   if (session_status() !== PHP_SESSION_ACTIVE)
   {
@@ -348,6 +395,10 @@ function community_test_reset_runtime()
     'metadata_sync_calls' => array(),
     'picture_urls' => array(),
     'invalidate_user_cache_calls' => 0,
+    'associate_images_to_categories_calls' => array(),
+    'trigger_notify_calls' => array(),
+    'mail_notification_calls' => array(),
+    'empty_lounge_calls' => 0,
     'temporary_files' => array(),
   );
 
@@ -378,6 +429,8 @@ function community_test_reset_runtime()
   $user = array(
     'id' => 2,
     'status' => 'normal',
+    'username' => 'contributor',
+    'email' => 'contributor@example.test',
     'level' => 0,
     'forbidden_categories' => '',
   );
@@ -391,6 +444,19 @@ function community_test_register_core_upload_methods($arr)
   global $conf;
 
   $service = &$arr[0];
+
+  $service->addMethod(
+    'pwg.images.uploadCompleted',
+    'ws_images_uploadCompleted',
+    array(
+      'image_id' => array('default' => null, 'flags' => WS_PARAM_ACCEPT_ARRAY),
+      'pwg_token' => array(),
+      'category_id' => array('type' => WS_TYPE_ID),
+    ),
+    'Notify Piwigo you have finished uploading a set of photos.',
+    PHPWG_ROOT_PATH . 'include/ws_functions/pwg.images.php',
+    array('admin_only' => true)
+  );
 
   $service->addMethod(
     'pwg.images.addChunk',

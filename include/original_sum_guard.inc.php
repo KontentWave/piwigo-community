@@ -161,6 +161,47 @@ function community_call_invalidate_user_cache($full = true)
   return invalidate_user_cache($full);
 }
 
+function community_call_associate_images_to_categories($image_ids, $category_ids)
+{
+  if (isset($GLOBALS['community_test']['associate_images_to_categories_calls']))
+  {
+    $GLOBALS['community_test']['associate_images_to_categories_calls'][] = array($image_ids, $category_ids);
+    if (isset($GLOBALS['community_test']['associate_images_to_categories_callback']))
+    {
+      return call_user_func($GLOBALS['community_test']['associate_images_to_categories_callback'], $image_ids, $category_ids);
+    }
+    return null;
+  }
+
+  include_once(PHPWG_ROOT_PATH.'admin/include/functions.php');
+
+  return associate_images_to_categories($image_ids, $category_ids);
+}
+
+function community_call_trigger_notify($event, $data)
+{
+  if (isset($GLOBALS['community_test']['trigger_notify_calls']))
+  {
+    $GLOBALS['community_test']['trigger_notify_calls'][] = array($event, $data);
+    return null;
+  }
+
+  return trigger_notify($event, $data);
+}
+
+function community_call_mail_notification_admins($subject, $content)
+{
+  if (isset($GLOBALS['community_test']['mail_notification_calls']))
+  {
+    $GLOBALS['community_test']['mail_notification_calls'][] = array($subject, $content);
+    return null;
+  }
+
+  include_once(PHPWG_ROOT_PATH.'include/functions_mail.inc.php');
+
+  return pwg_mail_notification_admins($subject, $content, false);
+}
+
 function community_call_set_tags($tag_ids, $image_id)
 {
   if (isset($GLOBALS['community_test']['set_tag_calls']))
@@ -657,6 +698,379 @@ function community_finalize_ws_images_upload_async($params, $service, $merged_fi
 function community_access_denied_error()
 {
   return new PwgError(401, 'Access denied');
+}
+
+function community_upload_completion_error()
+{
+  return new PwgError(403, 'Upload completion denied');
+}
+
+function community_normalize_completion_image_ids($image_ids)
+{
+  if (is_string($image_ids))
+  {
+    if ('' === trim($image_ids))
+    {
+      return null;
+    }
+
+    $image_ids = preg_split('/[\s,;|]/', $image_ids);
+  }
+
+  if (!is_array($image_ids) or count($image_ids) == 0)
+  {
+    return null;
+  }
+
+  $normalized = array();
+  foreach ($image_ids as $image_id)
+  {
+    if (is_int($image_id))
+    {
+      $normalized_id = $image_id;
+    }
+    elseif (is_string($image_id) and preg_match('/^[1-9][0-9]*$/', $image_id))
+    {
+      $normalized_id = (int) $image_id;
+    }
+    else
+    {
+      return null;
+    }
+
+    if ($normalized_id <= 0 or in_array($normalized_id, $normalized, true))
+    {
+      return null;
+    }
+
+    $normalized[] = $normalized_id;
+  }
+
+  sort($normalized, SORT_NUMERIC);
+
+  return $normalized;
+}
+
+function community_get_completion_lock_directory()
+{
+  global $conf;
+
+  return $conf['upload_dir'].'/buffer/community-upload-completion';
+}
+
+function community_acquire_completion_locks($image_ids)
+{
+  $directory = community_get_completion_lock_directory();
+  if (!mkgetdir($directory, MKGETDIR_DEFAULT & ~MKGETDIR_DIE_ON_ERROR))
+  {
+    return false;
+  }
+
+  $locks = array();
+  foreach ($image_ids as $image_id)
+  {
+    $lock = @fopen($directory.'/image-'.$image_id.'.lock', 'c');
+    if (false === $lock or !flock($lock, LOCK_EX))
+    {
+      if (is_resource($lock))
+      {
+        fclose($lock);
+      }
+      community_release_completion_locks($locks);
+      return false;
+    }
+
+    $locks[] = $lock;
+  }
+
+  return $locks;
+}
+
+function community_release_completion_locks($locks)
+{
+  foreach (array_reverse($locks) as $lock)
+  {
+    flock($lock, LOCK_UN);
+    fclose($lock);
+  }
+}
+
+function community_get_completion_receipt_path($image_ids, $category_id)
+{
+  global $user;
+
+  $identity = array(
+    'user_id' => (int) $user['id'],
+    'category_id' => (int) $category_id,
+    'image_ids' => $image_ids,
+  );
+  if (in_array($user['status'], array('guest', 'generic')))
+  {
+    $identity['session_idx'] = session_id();
+  }
+
+  return community_get_completion_lock_directory().'/receipt-'.hash('sha256', json_encode($identity)).'.json';
+}
+
+function community_read_completion_receipt($path)
+{
+  if (!is_file($path))
+  {
+    return null;
+  }
+
+  $receipt = json_decode(@file_get_contents($path), true);
+  if (!is_array($receipt)
+    or !isset($receipt['image_ids'], $receipt['pending'], $receipt['moved_from_lounge'], $receipt['category']))
+  {
+    return null;
+  }
+
+  return $receipt;
+}
+
+function community_write_completion_receipt($path, $result)
+{
+  $temporary_path = $path.'.'.getmypid().'.tmp';
+  $encoded = json_encode($result);
+  if (false === $encoded or false === @file_put_contents($temporary_path, $encoded, LOCK_EX))
+  {
+    @unlink($temporary_path);
+    return false;
+  }
+
+  if (!@rename($temporary_path, $path))
+  {
+    @unlink($temporary_path);
+    return false;
+  }
+
+  return true;
+}
+
+function community_get_completion_snapshot($image_ids, $category_id)
+{
+  global $user;
+
+  $query = '
+SELECT
+    i.id,
+    i.level,
+    i.added_by,
+    p.state,
+    p.notified_on,
+    ic.image_id AS associated_image_id,
+    l.image_id AS lounge_image_id
+  FROM '.IMAGES_TABLE.' AS i
+    LEFT JOIN '.COMMUNITY_PENDINGS_TABLE.' AS p ON p.image_id = i.id
+    LEFT JOIN '.IMAGE_CATEGORY_TABLE.' AS ic
+      ON ic.image_id = i.id AND ic.category_id = '.$category_id.'
+    LEFT JOIN '.LOUNGE_TABLE.' AS l
+      ON l.image_id = i.id AND l.category_id = '.$category_id.'
+  WHERE i.id IN ('.implode(',', $image_ids).')
+    AND i.added_by = '.(int) $user['id'].'
+;';
+
+  $rows = query2array($query);
+  $snapshot = array();
+  foreach ($rows as $row)
+  {
+    $image_id = (int) $row['id'];
+    if (isset($snapshot[$image_id]))
+    {
+      return null;
+    }
+    $snapshot[$image_id] = $row;
+  }
+
+  if (count($snapshot) != count($image_ids))
+  {
+    return null;
+  }
+
+  foreach ($image_ids as $image_id)
+  {
+    if (!isset($snapshot[$image_id])
+      or (empty($snapshot[$image_id]['associated_image_id']) and empty($snapshot[$image_id]['lounge_image_id'])))
+    {
+      return null;
+    }
+  }
+
+  return $snapshot;
+}
+
+function community_completion_has_session_provenance($image_ids)
+{
+  global $user;
+
+  if (!in_array($user['status'], array('guest', 'generic')))
+  {
+    return true;
+  }
+
+  $query = '
+SELECT DISTINCT object_id
+  FROM '.ACTIVITY_TABLE.'
+  WHERE `object` = \'photo\'
+    AND `action` = \'add\'
+    AND `object_id` IN ('.implode(',', $image_ids).')
+    AND `session_idx` = \''.pwg_db_real_escape_string(session_id()).'\'
+;';
+
+  $provenance_ids = array_map('intval', query2array($query, null, 'object_id'));
+  sort($provenance_ids, SORT_NUMERIC);
+
+  return $provenance_ids === $image_ids;
+}
+
+function community_complete_upload($params)
+{
+  global $conf, $user;
+
+  if (!isset($params['pwg_token']) or get_pwg_token() != $params['pwg_token'])
+  {
+    return new PwgError(403, 'Invalid security token');
+  }
+
+  $image_ids = community_normalize_completion_image_ids(isset($params['image_id']) ? $params['image_id'] : null);
+  $category_ids = community_authorize_upload_categories(isset($params['category_id']) ? $params['category_id'] : null);
+  if (empty($image_ids) or !is_array($category_ids) or count($category_ids) != 1)
+  {
+    return community_upload_completion_error();
+  }
+  $category_id = $category_ids[0];
+
+  $category_rows = query2array('SELECT id FROM '.CATEGORIES_TABLE.' WHERE id = '.$category_id.';');
+  if (count($category_rows) != 1)
+  {
+    return community_upload_completion_error();
+  }
+
+  $locks = community_acquire_completion_locks($image_ids);
+  if (false === $locks)
+  {
+    return new PwgError(503, 'Upload completion unavailable');
+  }
+
+  try
+  {
+    $snapshot = community_get_completion_snapshot($image_ids, $category_id);
+    if (null === $snapshot or !community_completion_has_session_provenance($image_ids))
+    {
+      return community_upload_completion_error();
+    }
+
+    $receipt_path = community_get_completion_receipt_path($image_ids, $category_id);
+    $receipt = community_read_completion_receipt($receipt_path);
+    if (null !== $receipt)
+    {
+      return $receipt;
+    }
+
+    $moved_from_lounge = array();
+    foreach ($image_ids as $image_id)
+    {
+      if (!empty($snapshot[$image_id]['lounge_image_id']))
+      {
+        $moved_from_lounge[] = array('image_id' => $image_id, 'category_id' => $category_id);
+      }
+    }
+
+    if (count($moved_from_lounge) > 0)
+    {
+      $lounge_image_ids = array_column($moved_from_lounge, 'image_id');
+      community_call_associate_images_to_categories($lounge_image_ids, array($category_id));
+      pwg_query('
+DELETE
+  FROM '.LOUNGE_TABLE.'
+  WHERE category_id = '.$category_id.'
+    AND image_id IN ('.implode(',', $lounge_image_ids).')
+;');
+      community_call_invalidate_user_cache();
+      community_call_trigger_notify('empty_lounge', $moved_from_lounge);
+    }
+
+    $pending = array();
+    $to_notify = array();
+    foreach ($image_ids as $image_id)
+    {
+      $image = $snapshot[$image_id];
+      if ('moderation_pending' == $image['state'])
+      {
+        $pending[] = $image;
+      }
+      if (empty($image['notified_on']))
+      {
+        $to_notify[] = $image_id;
+      }
+    }
+
+    if (count($to_notify) > 0 and (!isset($conf['community_notify_admins']) or $conf['community_notify_admins']))
+    {
+      $category_infos = get_cat_info($category_id);
+      $keyargs_content = array(
+        get_l10n_args('Hi administrators,', ''),
+        get_l10n_args('', ''),
+        get_l10n_args('Album: %s', get_cat_display_name($category_infos['upper_names'], null, false)),
+        get_l10n_args('User: %s', $user['username']),
+        get_l10n_args('Email: %s', $user['email']),
+      );
+      if (count($pending) > 0)
+      {
+        $keyargs_content[] = get_l10n_args('', '');
+        $keyargs_content[] = get_l10n_args('Validation page: %s', get_absolute_root_url().'admin.php?page=plugin-community-pendings');
+      }
+
+      community_call_mail_notification_admins(
+        get_l10n_args('%d photos uploaded by %s', array(count($to_notify), $user['username'])),
+        $keyargs_content
+      );
+      pwg_query('
+UPDATE '.COMMUNITY_PENDINGS_TABLE.'
+  SET notified_on = NOW()
+  WHERE image_id IN ('.implode(',', $to_notify).')
+    AND notified_on IS NULL
+;');
+    }
+
+    community_call_trigger_notify(
+      'ws_images_uploadCompleted',
+      array(
+        'image_ids' => $image_ids,
+        'category_id' => $category_id,
+        'moved_from_lounge' => $moved_from_lounge,
+      )
+    );
+
+    $category_count = pwg_db_fetch_assoc(pwg_query('
+SELECT COUNT(*) AS nb_photos
+  FROM '.IMAGE_CATEGORY_TABLE.'
+  WHERE category_id = '.$category_id.'
+;'));
+
+    $result = array(
+      'image_ids' => $image_ids,
+      'pending' => $pending,
+      'moved_from_lounge' => $moved_from_lounge,
+      'category' => array(
+        'id' => $category_id,
+        'nb_photos' => $category_count['nb_photos'],
+        'label' => get_cat_display_name_from_id($category_id, null),
+      ),
+    );
+
+    if (!community_write_completion_receipt($receipt_path, $result))
+    {
+      return new PwgError(503, 'Upload completion unavailable');
+    }
+
+    return $result;
+  }
+  finally
+  {
+    community_release_completion_locks($locks);
+  }
 }
 
 function community_normalize_upload_category_ids($categories)

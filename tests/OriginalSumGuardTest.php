@@ -24,6 +24,8 @@ class OriginalSumGuardTest extends TestCase
     $chunkMethod = community_test_get_registered_method($service, 'pwg.images.addChunk');
     $uploadMethod = community_test_get_registered_method($service, 'pwg.images.upload');
     $uploadAsyncMethod = community_test_get_registered_method($service, 'pwg.images.uploadAsync');
+    $coreCompletionMethod = community_test_get_registered_method($service, 'pwg.images.uploadCompleted');
+    $communityCompletionMethod = community_test_get_registered_method($service, 'community.images.uploadCompleted');
 
     $this->assertSame('community_ws_images_add_simple', $addSimpleMethod['callback']);
     $this->assertSame(array('post_only' => true), $addSimpleMethod['options']);
@@ -35,6 +37,324 @@ class OriginalSumGuardTest extends TestCase
     $this->assertSame(array('post_only' => true), $uploadAsyncMethod['options']);
     $this->assertSame(array(), $addMethod['options']);
     $this->assertSame(array('post_only' => true), $chunkMethod['options']);
+    $this->assertSame('community_ws_images_upload_completed', $coreCompletionMethod['callback']);
+    $this->assertSame(array('post_only' => true), $coreCompletionMethod['options']);
+    $this->assertSame('community_ws_images_upload_completed_compat', $communityCompletionMethod['callback']);
+    $this->assertSame(array('post_only' => true), $communityCompletionMethod['options']);
+  }
+
+  public function testBrowserUsesOneAuthoritativeCompletionRequestWithFailureHandling()
+  {
+    $template = file_get_contents(dirname(__DIR__).'/template/add_photos.tpl');
+
+    $this->assertSame(1, substr_count($template, 'method=community.images.uploadCompleted'));
+    $this->assertSame(0, substr_count($template, 'method=pwg.images.uploadCompleted'));
+    $this->assertStringContainsString('completionFailed', $template);
+  }
+
+  public function testUploadCompletedLifecycleScopesFinalizationAndPreservesStatus()
+  {
+    global $user;
+
+    $images = array(
+      12 => array('added_by' => 2, 'associated' => false, 'lounge' => true, 'state' => 'moderation_pending', 'notified_on' => null),
+      13 => array('added_by' => 2, 'associated' => true, 'lounge' => false, 'state' => null, 'notified_on' => null),
+      99 => array('added_by' => 3, 'associated' => false, 'lounge' => true, 'state' => null, 'notified_on' => null),
+    );
+    $service = community_test_build_service('pwg.images.uploadCompleted');
+    $this->configureCompletionFixture($images);
+    $status = $user['status'];
+
+    $result = $service->invoke('pwg.images.uploadCompleted', array(
+      'image_id' => '13,12',
+      'category_id' => 1,
+      'pwg_token' => 'test-token',
+    ));
+
+    $this->assertSame($status, $user['status']);
+    $this->assertSame(array(array('image_id' => 12, 'category_id' => 1)), $result['moved_from_lounge']);
+    $this->assertSame(array(array(array(12), array(1))), $GLOBALS['community_test']['associate_images_to_categories_calls']);
+    $this->assertTrue($GLOBALS['community_test']['completion_images'][99]['lounge']);
+    $this->assertSame(1, $GLOBALS['community_test']['invalidate_user_cache_calls']);
+    $this->assertSame('ws_images_uploadCompleted', $GLOBALS['community_test']['trigger_notify_calls'][1][0]);
+    $this->assertSame(array(12, 13), $GLOBALS['community_test']['trigger_notify_calls'][1][1]['image_ids']);
+    $this->assertSame(1, $GLOBALS['community_test']['trigger_notify_calls'][1][1]['category_id']);
+    $this->assertSame(0, $GLOBALS['community_test']['empty_lounge_calls']);
+    $this->assertStringNotContainsString('empty_lounge_running', implode("\n", $GLOBALS['community_test']['queries']));
+    $this->assertSame('User: %s', $GLOBALS['community_test']['mail_notification_calls'][0][1][3]['key']);
+    $this->assertSame('contributor', $GLOBALS['community_test']['mail_notification_calls'][0][1][3]['args']);
+    $this->assertSame('Album: %s', $GLOBALS['community_test']['mail_notification_calls'][0][1][2]['key']);
+    $this->assertSame('Album 1', $GLOBALS['community_test']['mail_notification_calls'][0][1][2]['args']);
+  }
+
+  /**
+   * @dataProvider invalidCompletionBatchProvider
+   */
+  public function testUploadCompletedLifecycleRejectsInvalidBatchAtomically($imageIds, $categoryId)
+  {
+    $service = community_test_build_service('community.images.uploadCompleted');
+    $this->configureCompletionFixture(array(
+      12 => array('added_by' => 2, 'associated' => true, 'lounge' => false, 'state' => null, 'notified_on' => null),
+      14 => array('added_by' => 3, 'associated' => true, 'lounge' => false, 'state' => null, 'notified_on' => null),
+    ));
+
+    $result = $service->invoke('community.images.uploadCompleted', array(
+      'image_id' => $imageIds,
+      'category_id' => $categoryId,
+      'pwg_token' => 'test-token',
+    ));
+
+    $this->assertInstanceOf(PwgError::class, $result);
+    $this->assertSame(array(), $GLOBALS['community_test']['associate_images_to_categories_calls']);
+    $this->assertSame(array(), $GLOBALS['community_test']['trigger_notify_calls']);
+    $this->assertSame(array(), $GLOBALS['community_test']['mail_notification_calls']);
+    $this->assertSame(0, $GLOBALS['community_test']['invalidate_user_cache_calls']);
+  }
+
+  public static function invalidCompletionBatchProvider()
+  {
+    return array(
+      'missing' => array(null, 1),
+      'empty' => array('', 1),
+      'malformed' => array('12,nope', 1),
+      'duplicate' => array('12,12', 1),
+      'zero' => array('0', 1),
+      'negative' => array('-12', 1),
+      'missing image' => array('15', 1),
+      'foreign owned' => array('14', 1),
+      'mixed owned' => array('12,14', 1),
+      'wrong category' => array('12', 2),
+      'unauthorized category' => array('12', 3),
+    );
+  }
+
+  public function testUploadCompletedLifecycleRejectsInvalidTokenBeforeQueriesOrEffects()
+  {
+    $service = community_test_build_service('community.images.uploadCompleted');
+
+    $result = $service->invoke('community.images.uploadCompleted', array(
+      'image_id' => '12',
+      'category_id' => 1,
+      'pwg_token' => 'invalid',
+    ));
+
+    $this->assertInstanceOf(PwgError::class, $result);
+    $this->assertSame(array(), $GLOBALS['community_test']['queries']);
+    $this->assertSame(array(), $GLOBALS['community_test']['mail_notification_calls']);
+    $this->assertSame(array(), $GLOBALS['community_test']['trigger_notify_calls']);
+  }
+
+  public function testUploadCompletedLifecycleRejectsMissingTokenBeforeQueriesOrEffects()
+  {
+    $service = community_test_build_service('pwg.images.uploadCompleted');
+
+    $result = $service->invoke('pwg.images.uploadCompleted', array(
+      'image_id' => '12',
+      'category_id' => 1,
+    ));
+
+    $this->assertInstanceOf(PwgError::class, $result);
+    $this->assertSame(array(), $GLOBALS['community_test']['queries']);
+    $this->assertSame(array(), $GLOBALS['community_test']['mail_notification_calls']);
+    $this->assertSame(array(), $GLOBALS['community_test']['trigger_notify_calls']);
+    $this->assertSame(0, $GLOBALS['community_test']['invalidate_user_cache_calls']);
+  }
+
+  public function testGenericUploadCompletedLifecycleRequiresCurrentSessionProvenance()
+  {
+    global $user;
+
+    $service = community_test_build_service('community.images.uploadCompleted');
+    $user['status'] = 'generic';
+    $this->configureCompletionFixture(array(
+      12 => array('added_by' => 2, 'associated' => true, 'lounge' => false, 'state' => null, 'notified_on' => null),
+    ), array());
+
+    $result = $service->invoke('community.images.uploadCompleted', array(
+      'image_id' => '12',
+      'category_id' => 1,
+      'pwg_token' => 'test-token',
+    ));
+
+    $this->assertInstanceOf(PwgError::class, $result);
+    $this->assertSame(array(), $GLOBALS['community_test']['trigger_notify_calls']);
+  }
+
+  public function testGenericUploadCompletedLifecycleAcceptsCurrentSessionProvenance()
+  {
+    global $user;
+
+    $service = community_test_build_service('community.images.uploadCompleted');
+    $user['status'] = 'generic';
+    $this->configureCompletionFixture(array(
+      12 => array('added_by' => 2, 'associated' => true, 'lounge' => false, 'state' => 'moderation_pending', 'notified_on' => null),
+    ), array(12));
+
+    $result = $service->invoke('community.images.uploadCompleted', array(
+      'image_id' => '12',
+      'category_id' => 1,
+      'pwg_token' => 'test-token',
+    ));
+
+    $this->assertIsArray($result);
+    $this->assertCount(1, $result['pending']);
+    $this->assertSame('generic', $user['status']);
+    $this->assertCount(1, $GLOBALS['community_test']['mail_notification_calls']);
+  }
+
+  public function testUploadCompletedLifecycleSequentialRetryIsIdempotentAcrossPublicNames()
+  {
+    $service = community_test_build_service('pwg.images.uploadCompleted');
+    $this->configureCompletionFixture(array(
+      12 => array('added_by' => 2, 'associated' => false, 'lounge' => true, 'state' => 'moderation_pending', 'notified_on' => null),
+    ));
+    $params = array('image_id' => '12', 'category_id' => 1, 'pwg_token' => 'test-token');
+
+    $first = $service->invoke('pwg.images.uploadCompleted', $params);
+    $second = $service->invoke('community.images.uploadCompleted', $params);
+
+    $this->assertSame(array(array('image_id' => 12, 'category_id' => 1)), $first['moved_from_lounge']);
+    $this->assertCount(1, $second['pending']);
+    $this->assertCount(1, $GLOBALS['community_test']['associate_images_to_categories_calls']);
+    $this->assertCount(2, $GLOBALS['community_test']['trigger_notify_calls']);
+    $this->assertCount(1, $GLOBALS['community_test']['mail_notification_calls']);
+    $this->assertSame(1, $GLOBALS['community_test']['invalidate_user_cache_calls']);
+    $updates = array_filter($GLOBALS['community_test']['queries'], function ($query) {
+      return false !== strpos($query, 'SET notified_on = NOW()');
+    });
+    $this->assertCount(1, $updates);
+  }
+
+  public function testUploadCompletedLifecycleOverlappingCallsFinalizeAndNotifyOnce()
+  {
+    if (!function_exists('pcntl_fork') || !function_exists('stream_socket_pair'))
+    {
+      $this->markTestSkipped('pcntl and stream sockets are required for the completion overlap regression');
+    }
+
+    $service = community_test_build_service('pwg.images.uploadCompleted');
+    $this->configureCompletionFixture(array(
+      12 => array('added_by' => 2, 'associated' => false, 'lounge' => true, 'state' => 'moderation_pending', 'notified_on' => null),
+    ));
+    $params = array('image_id' => '12', 'category_id' => 1, 'pwg_token' => 'test-token');
+    $locks = community_acquire_completion_locks(array(12));
+    $this->assertIsArray($locks);
+
+    $sockets = stream_socket_pair(STREAM_PF_UNIX, STREAM_SOCK_STREAM, STREAM_IPPROTO_IP);
+    $this->assertNotFalse($sockets);
+    $pid = pcntl_fork();
+    $this->assertNotSame(-1, $pid);
+
+    if (0 === $pid)
+    {
+      fclose($sockets[0]);
+      community_release_completion_locks($locks);
+      fwrite($sockets[1], "ready\n");
+      $result = $service->invoke('pwg.images.uploadCompleted', $params);
+      fwrite($sockets[1], json_encode(array(
+        'result' => $result,
+        'associations' => count($GLOBALS['community_test']['associate_images_to_categories_calls']),
+        'hooks' => count($GLOBALS['community_test']['trigger_notify_calls']),
+        'mail' => count($GLOBALS['community_test']['mail_notification_calls']),
+      ))."\n");
+      fclose($sockets[1]);
+      exit(0);
+    }
+
+    fclose($sockets[1]);
+    $this->assertSame('ready', trim(fgets($sockets[0])));
+    community_release_completion_locks($locks);
+    $child = json_decode(trim(fgets($sockets[0])), true);
+    fclose($sockets[0]);
+    pcntl_waitpid($pid, $status);
+
+    $retry = $service->invoke('community.images.uploadCompleted', $params);
+
+    $this->assertTrue(pcntl_wifexited($status));
+    $this->assertSame(0, pcntl_wexitstatus($status));
+    $this->assertSame(1, $child['associations']);
+    $this->assertSame(2, $child['hooks']);
+    $this->assertSame(1, $child['mail']);
+    $this->assertCount(1, $retry['pending']);
+    $this->assertSame(array(), $GLOBALS['community_test']['associate_images_to_categories_calls']);
+    $this->assertSame(array(), $GLOBALS['community_test']['trigger_notify_calls']);
+    $this->assertSame(array(), $GLOBALS['community_test']['mail_notification_calls']);
+  }
+
+  private function configureCompletionFixture($images, $sessionImageIds = null)
+  {
+    $GLOBALS['community_test']['completion_images'] = $images;
+    $GLOBALS['community_test']['completion_session_image_ids'] = null === $sessionImageIds ? array_keys($images) : $sessionImageIds;
+    $GLOBALS['community_test']['fetch_assoc_return'] = array(array('nb_photos' => count($images)));
+    $GLOBALS['community_test']['query2array_callback'] = function ($query, $keyField, $valueField) {
+      if (false !== strpos($query, 'FROM '.CATEGORIES_TABLE))
+      {
+        return false !== strpos($query, 'id = 1') ? array(array('id' => 1)) : array();
+      }
+      if (false !== strpos($query, 'FROM '.ACTIVITY_TABLE))
+      {
+        return $GLOBALS['community_test']['completion_session_image_ids'];
+      }
+      if (false !== strpos($query, 'FROM '.IMAGES_TABLE.' AS i'))
+      {
+        preg_match('/i\.id IN \(([^)]+)\)/', $query, $matches);
+        $ids = array_map('intval', explode(',', $matches[1]));
+        $rows = array();
+        foreach ($ids as $id)
+        {
+          if (!isset($GLOBALS['community_test']['completion_images'][$id]))
+          {
+            continue;
+          }
+          $image = $GLOBALS['community_test']['completion_images'][$id];
+          if (2 != $image['added_by'])
+          {
+            continue;
+          }
+          $rows[] = array(
+            'id' => $id,
+            'level' => 0,
+            'added_by' => $image['added_by'],
+            'state' => $image['state'],
+            'notified_on' => $image['notified_on'],
+            'associated_image_id' => $image['associated'] ? $id : null,
+            'lounge_image_id' => $image['lounge'] ? $id : null,
+          );
+        }
+        return $rows;
+      }
+
+      return array();
+    };
+    $GLOBALS['community_test']['associate_images_to_categories_callback'] = function ($imageIds) {
+      foreach ($imageIds as $imageId)
+      {
+        $GLOBALS['community_test']['completion_images'][$imageId]['associated'] = true;
+      }
+    };
+    $GLOBALS['community_test']['query_callback'] = function ($query) {
+      if (false !== strpos($query, 'DELETE') && false !== strpos($query, LOUNGE_TABLE))
+      {
+        preg_match('/image_id IN \(([^)]+)\)/', $query, $matches);
+        foreach (array_map('intval', explode(',', $matches[1])) as $imageId)
+        {
+          $GLOBALS['community_test']['completion_images'][$imageId]['lounge'] = false;
+        }
+      }
+      if (false !== strpos($query, 'SET notified_on = NOW()'))
+      {
+        preg_match('/image_id IN \(([^)]+)\)/', $query, $matches);
+        foreach (array_map('intval', explode(',', $matches[1])) as $imageId)
+        {
+          if (isset($GLOBALS['community_test']['completion_images'][$imageId]))
+          {
+            $GLOBALS['community_test']['completion_images'][$imageId]['notified_on'] = 'now';
+          }
+        }
+      }
+
+      return $query;
+    };
   }
 
   public function testNonAdminUploadAsyncLifecycleAuthorizedSingleCategoryDelegatesOnceWithoutStatusElevation()
@@ -1942,6 +2262,7 @@ class OriginalSumGuardTest extends TestCase
     $chunkMethod = community_test_get_registered_method($service, 'pwg.images.addChunk');
     $uploadMethod = community_test_get_registered_method($service, 'pwg.images.upload');
     $uploadAsyncMethod = community_test_get_registered_method($service, 'pwg.images.uploadAsync');
+    $completionMethod = community_test_get_registered_method($service, 'pwg.images.uploadCompleted');
 
     $this->assertSame('ws_images_addSimple', $addSimpleMethod['callback']);
     $this->assertSame(array('admin_only' => true, 'post_only' => true), $addSimpleMethod['options']);
@@ -1953,6 +2274,26 @@ class OriginalSumGuardTest extends TestCase
     $this->assertSame(array('admin_only' => true, 'post_only' => true), $uploadAsyncMethod['options']);
     $this->assertSame(array('admin_only' => true), $addMethod['options']);
     $this->assertSame(array('admin_only' => true, 'post_only' => true), $chunkMethod['options']);
+    $this->assertSame('ws_images_uploadCompleted', $completionMethod['callback']);
+    $this->assertSame(array('admin_only' => true), $completionMethod['options']);
+  }
+
+  public function testUploadCompletedLifecycleFakedByCommunityFalseKeepsExistingBehavior()
+  {
+    $service = community_test_build_service(
+      'pwg.images.uploadCompleted',
+      array(
+        'image_id' => '12',
+        'category_id' => '1',
+        'pwg_token' => 'test-token',
+        'faked_by_community' => 'false',
+      )
+    );
+
+    $method = community_test_get_registered_method($service, 'pwg.images.uploadCompleted');
+
+    $this->assertSame('ws_images_uploadCompleted', $method['callback']);
+    $this->assertSame(array('admin_only' => true), $method['options']);
   }
 
   public function testAddSimpleLifecycleFakedByCommunityFalseKeepsExistingBehavior()
