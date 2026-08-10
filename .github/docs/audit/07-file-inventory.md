@@ -20,7 +20,7 @@ The audit includes direct Piwigo code needed to establish webservice authorizati
 | `admin_permissions.php`                     | Grant validation, CRUD, cache invalidation, and POST/token enforcement.                                                     |
 | `maintain.class.php`                        | Install/upgrade/activate/uninstall schema behavior and defaults.                                                            |
 | `include/functions_community.inc.php`       | Permission model, cache, user album creation, cleanup, quota aggregation, compatibility fallback.                           |
-| `include/photos_add_direct_process.inc.php` | Multipart handling, ZIP extraction, persistence, temporary files, error checks.                                             |
+| `include/photos_add_direct_process.inc.php` | Multipart handling, atomic ZIP-batch rejection, image persistence, temporary files, and error checks.                       |
 
 ## Templates and JavaScript
 

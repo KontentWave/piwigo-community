@@ -12,9 +12,9 @@ An upload is first committed by Piwigo, then the `sendResponse` hook inserts a p
 ## REL-02: Important return values and parse results are unchecked
 
 **Severity: High**
-**Evidence:** `include/photos_add_direct_process.inc.php:72-114`; `main.inc.php:894-935`; `main.inc.php:837-879`.
+**Evidence:** `include/photos_add_direct_process.inc.php`; `main.inc.php:894-935`; `main.inc.php:837-879`.
 
-`move_uploaded_file()`, PclZip extraction, `add_uploaded_file()`, JSON decoding/result shape, notification delivery, cleanup, and many database writes are assumed to succeed. A TODO explicitly notes that non-integer upload IDs are not handled. `mass_inserts(array_keys($inserts[0]))` can dereference an empty array if the uploaded image cannot be found.
+`add_uploaded_file()`, JSON decoding/result shape, notification delivery, cleanup, and many database writes are assumed to succeed. A TODO explicitly notes that non-integer upload IDs are not handled. `mass_inserts(array_keys($inserts[0]))` can dereference an empty array if the uploaded image cannot be found. The former Community ZIP move/extraction operations were removed with SEC-03 on 2026-08-10; the remaining REL-02 operations are still open.
 
 **Remediation:** Check every external operation, attach context, and stop the state transition on failure. Decode JSON with explicit error handling. Treat mail as an outbox side effect: commit notification intent, send asynchronously/retry, then record delivery outcome.
 
@@ -30,9 +30,10 @@ Both loops iterate `$tn_idx => $thumbnail` but call `unset($page['thumbnails'][$
 ## REL-04: Temporary upload cleanup is incomplete
 
 **Severity: Medium**
-**Evidence:** `include/photos_add_direct_process.inc.php:61-114`.
+**Status 2026-08-10: ZIP-specific portion remediated; chunk/request temporary-storage lifecycle remains open**
+**Evidence:** File-backed chunk state in `main.inc.php` and PHP/core request temporary files.
 
-The uploaded archive and extraction directory are not explicitly removed on success or failure. Partial extraction and PHP termination can leave buffer data. Chunk methods similarly require lifecycle cleanup coordinated with core.
+Community no longer moves ZIP archives or creates extraction directories, so archive and partial-extraction cleanup is no longer a plugin runtime concern. Chunk methods still require lifecycle cleanup coordinated with core, and PHP may create request temporary files before plugin code executes.
 
 **Remediation:** Track created paths, clean them in `finally`, and add a scheduled sweeper constrained to application-owned names and maximum age. Monitor buffer bytes and oldest-file age.
 

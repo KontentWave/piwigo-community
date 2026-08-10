@@ -4,7 +4,7 @@
 
 Target: before the next production exposure change.
 
-- Disable ZIP upload for Community users.
+- Disable ZIP upload for Community users. Completed 2026-08-10: Community archive support is intentionally removed at the server boundary and from uploader filters.
 - Restrict Community grants to authenticated, trusted contributors and moderated albums.
 - Apply web server body, rate, concurrency, and upload-buffer limits.
 - Monitor unexpected destination albums, new tags, buffer growth, and failed cleanup.
@@ -27,6 +27,7 @@ Target: first patch release.
 6. Convert all admin mutations to POST plus `pwg_token`; remove permission deletion by GET.
    Status 2026-08-10: completed. Permission save/delete, configuration save, album-owner save, and pending validate/reject now use POST-only, strict scalar action dispatch and call `check_pwg_token()` before action-specific validation, reads, writes, destructive callbacks, cache invalidation, or redirects. Templates submit the current token and exactly one action, pending bulk/AJAX paths share the canonical contract, and permission deletion is an accessible confirmed POST control while GET editing remains read-only. Isolated controller lifecycle tests prove valid operations occur exactly once and denied or malformed requests have zero modeled side effects. The focused local suite passes with 22 tests and 532 assertions; the complete configured local suite passes with 218 tests and 1584 assertions, with one existing warning and one PHPUnit deprecation. This is local-suite evidence, not GitHub Actions or CI evidence.
 7. Add archive path and resource limits or remove archive support.
+   Status 2026-08-10: completed by removal. The direct-upload processor preflights every successful filename before processing any file and rejects complete ZIP or mixed batches case-insensitively. PclZip loading, archive moves, listing, extraction, buffer artifacts, and archive-derived persistence are removed; the Community uploader uses only a local copy of configured picture extensions without mutating global configuration. Other Community upload transports do not extract archives. The focused local suite passes with 15 tests and 188 assertions, and the complete configured suite passes with 233 tests and 1772 assertions, with one existing warning and one PHPUnit deprecation. This is local-suite evidence, not GitHub Actions or CI evidence. Community ZIP upload removal is an intentional compatibility change; SEC-04 and REL-01/02 remain open.
 
 Acceptance tests:
 
@@ -46,7 +47,7 @@ Acceptance tests:
 - Category creation accepts only an authorized existing parent or an authorized root request, refreshes recursive Community permissions after success, and never uses ambient administrator status.
 - Tag creation requires an effective upload grant; category-creation rights alone are insufficient.
 - Community category/tag creation requires POST plus a valid token, delegates exactly once, and leaves denied requests without creation, activity, hook, or cache side effects.
-- Traversal, absolute path, symlink-like, high-ratio, too-many-entry, and over-quota archives fail and leave no files.
+- Traversal, absolute-path, nested, symlink-like, high-ratio, and excessive-entry archive payloads cannot reach listing or extraction; ZIP and mixed batches leave no plugin-created files or persistence effects.
 
 ## Phase 2: Integrity and dependability
 

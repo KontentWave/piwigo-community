@@ -222,14 +222,7 @@ $template->assign(
 
 include_once(PHPWG_ROOT_PATH.'admin/include/photos_add_direct_prepare.inc.php');
 
-if (isset($conf['upload_form_all_types']) and $conf['upload_form_all_types'])
-{
-  $upload_file_types = $conf['file_ext'];
-}
-else
-{
-  $upload_file_types = $conf['picture_ext'];
-}
+$upload_file_types = $conf['picture_ext'];
 
 $unique_exts = array_unique(array_map('strtolower', $upload_file_types));
 
@@ -271,6 +264,7 @@ $template->assign(
   array(
     'ABSOLUTE_ROOT_URL' => get_absolute_root_url(),
     'upload_file_types' => implode(', ', $unique_exts),
+    'file_exts' => implode(',', $unique_exts),
     'upload_mode' => $upload_mode,
     'form_action' => PHOTOS_ADD_BASE_URL.'&amp;upload_mode='.$upload_mode.'&amp;processed=1',
     'switch_url' => PHOTOS_ADD_BASE_URL.'&amp;upload_mode='.$upload_switch,

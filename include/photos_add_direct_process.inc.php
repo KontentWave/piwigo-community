@@ -53,8 +53,36 @@ if (isset($_GET['processed']))
   }
     
   $image_ids = array();
-        
-  if (isset($_FILES) and !empty($_FILES['image_upload']))
+
+  $archive_batch_rejected = false;
+  if (isset($_FILES['image_upload']['error']) and is_array($_FILES['image_upload']['error']))
+  {
+    foreach ($_FILES['image_upload']['error'] as $idx => $error)
+    {
+      if (UPLOAD_ERR_OK == $error)
+      {
+        if (!isset($_FILES['image_upload']['name'][$idx]) or !is_string($_FILES['image_upload']['name'][$idx]))
+        {
+          $archive_batch_rejected = true;
+          break;
+        }
+
+        $extension = pathinfo($_FILES['image_upload']['name'][$idx], PATHINFO_EXTENSION);
+        if ('zip' == strtolower($extension))
+        {
+          $archive_batch_rejected = true;
+          break;
+        }
+      }
+    }
+  }
+
+  if ($archive_batch_rejected)
+  {
+    $page['errors'][] = l10n('ZIP archives are not supported');
+  }
+
+  if (!$archive_batch_rejected and isset($_FILES) and !empty($_FILES['image_upload']))
   {
     $starttime = get_moment();
 
@@ -65,55 +93,7 @@ if (isset($_GET['processed']))
       $images_to_add = array();
       
       $extension = pathinfo($_FILES['image_upload']['name'][$idx], PATHINFO_EXTENSION);
-      if ('zip' == strtolower($extension))
-      {
-        $upload_dir = $conf['upload_dir'].'/buffer';
-        prepare_directory($upload_dir);
-        
-        $temporary_archive_name = date('YmdHis').'-'.generate_key(10);
-        $archive_path = $upload_dir.'/'.$temporary_archive_name.'.zip';
-        
-        move_uploaded_file(
-          $_FILES['image_upload']['tmp_name'][$idx],
-          $archive_path
-          );
-
-        define('PCLZIP_TEMPORARY_DIR', $upload_dir.'/');
-        include_once(PHPWG_ROOT_PATH.'admin/include/pclzip.lib.php');
-        $zip = new PclZip($archive_path);
-        if ($list = $zip->listContent())
-        {
-          $indexes_to_extract = array();
-          
-          foreach ($list as $node)
-          {
-            if (1 == $node['folder'])
-            {
-              continue;
-            }
-
-            if (is_valid_image_extension(pathinfo($node['filename'], PATHINFO_EXTENSION)))
-            {
-              $indexes_to_extract[] = $node['index'];
-              
-              $images_to_add[] = array(
-                'source_filepath' => $upload_dir.'/'.$temporary_archive_name.'/'.$node['filename'],
-                'original_filename' => basename($node['filename']),
-                );
-            }
-          }
-      
-          if (count($indexes_to_extract) > 0)
-          {
-            $zip->extract(
-              PCLZIP_OPT_PATH, $upload_dir.'/'.$temporary_archive_name,
-              PCLZIP_OPT_BY_INDEX, $indexes_to_extract,
-              PCLZIP_OPT_ADD_TEMP_FILE_ON
-              );
-          }
-        }
-      }
-      elseif (is_valid_image_extension($extension))
+      if (is_valid_image_extension($extension))
       {
         $images_to_add[] = array(
           'source_filepath' => $_FILES['image_upload']['tmp_name'][$idx],
@@ -153,7 +133,7 @@ if (isset($_GET['processed']))
 
   } // if (!empty($_FILES))
 
-  if (isset($_POST['upload_id']))
+  if (!$archive_batch_rejected and isset($_POST['upload_id']))
   {
     // we're on a multiple upload, with uploadify and so on
     if (isset($_SESSION['uploads_error'][ $_POST['upload_id'] ]))

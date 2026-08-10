@@ -47,7 +47,7 @@ The same elevation grants `pwg.tags.add`, chunk/check methods, session status, a
 
 **Final acceptance evidence 2026-07-31:** Lifecycle coverage proves immutable non-admin status through registration, callbacks, later handlers, and response hooks; capability separation; final permission, ownership, category, lounge, and guest-session revocation; safe MD5 and filename existence behavior; atomic foreign-match denial; checksum compatibility and authorization-before-path/hash behavior; exact check-upload delegation; normal and Remote Sync session responses; two-factor guard invocation; administrator and explicit-bypass passthrough; and migrated upload moderation/checksum context. The local `tests/OriginalSumGuardTest.php` PHPUnit run passes with 196 tests and 1052 assertions. All four changed PHP files pass `php -l`. This is local-suite evidence, not GitHub Actions or CI evidence. No plugin static-analysis or code-style command is configured.
 
-**Residual risk:** No documented Piwigo limit exists for `pwg.images.exist` candidate lists, so resource-amplification limits remain operational hardening work. File-backed upload and completion state is not transactional database state, and completion receipts are not a notification outbox. Quota reservation, archive hardening, SEC-03, SEC-04, and REL-01/02 remain open.
+**Residual risk:** No documented Piwigo limit exists for `pwg.images.exist` candidate lists, so resource-amplification limits remain operational hardening work. File-backed upload and completion state is not transactional database state, and completion receipts are not a notification outbox. Quota reservation, SEC-04, and REL-01/02 remain open.
 
 ## SEC-02: Missing CSRF protection on administrator mutations
 
@@ -65,12 +65,13 @@ Permission creation/update, configuration changes, album ownership assignment, a
 
 **Local acceptance evidence 2026-08-10:** `./vendor/bin/phpunit --configuration phpunit.xml.dist tests/Sec02AdminCsrfTest.php` passes with 22 tests and 532 assertions. `./vendor/bin/phpunit --configuration phpunit.xml.dist tests/OriginalSumGuardTest.php` preserves the accepted SEC-01 baseline with 196 tests and 1052 assertions, with one existing warning and one PHPUnit deprecation. The complete configured local suite passes with 218 tests and 1584 assertions, with the same warning and deprecation. All six changed PHP/test files pass `php -l`. No plugin static-analysis or code-style command is configured. This is local-suite evidence, not GitHub Actions or CI evidence.
 
-**Residual risk:** The SEC-02 harness executes the real controllers in isolated PHP processes with instrumented Piwigo boundaries rather than through a live browser/server/database stack. It proves backend call ordering and zero modeled side effects, while template assertions prove the emitted request contract. Browser integration remains desirable but is not claimed here. SEC-03, SEC-04, and REL-01/02 remain open.
+**Residual risk:** The SEC-02 harness executes the real controllers in isolated PHP processes with instrumented Piwigo boundaries rather than through a live browser/server/database stack. It proves backend call ordering and zero modeled side effects, while template assertions prove the emitted request contract. Browser integration remains desirable but is not claimed here. SEC-04 and REL-01/02 remain open.
 
 ## SEC-03: Unbounded and insufficiently constrained ZIP extraction
 
 **Severity: High**
-**Evidence:** `include/photos_add_direct_process.inc.php:61-114`.
+**Status 2026-08-10: Remediated by removing Community archive support**
+**Current evidence:** `include/photos_add_direct_process.inc.php` preflights the complete successful direct-upload batch and rejects case-insensitive `.zip` names and malformed filename values before upload processing; `add_photos.php` builds Community's client filter from a local copy of `picture_ext`. `tests/Sec03ArchiveDisablementTest.php` and `tests/fixtures/sec03_upload_runner.php` provide process-level lifecycle and zero-side-effect coverage.
 
 ZIP files are moved into the upload buffer, listed, filtered only by filename extension, and extracted with PclZip. The code does not reject absolute paths or `..` segments, verify the canonical extraction target, limit entry count, nesting, compression ratio, total expanded bytes, per-entry bytes, or processing time. Return values from move and extract operations are not checked, and temporary archives/directories are not explicitly removed.
 
@@ -79,6 +80,16 @@ Whether the bundled PclZip version fully blocks traversal must not be treated as
 **Impact:** Disk or CPU exhaustion, buffer pollution, retained temporary data, and potentially path traversal depending on library behavior/version.
 
 **Remediation:** Prefer disabling archive upload for untrusted users. Otherwise inspect metadata before extraction; reject unsafe names; enforce configured entry/expanded-byte/ratio/depth limits; extract each approved entry to an application-generated flat filename; verify `realpath` containment and image content; and clean up in `finally`.
+
+**Update 2026-08-10:** Community ZIP upload is intentionally removed as a compatibility change. The direct-upload server boundary scans every successful entry before processing any file, rejects the complete request when any original filename has a case-insensitive `.zip` extension, and safely rejects malformed non-string filename values. The former upload-buffer preparation, archive move, PclZip load/instantiation, entry listing, extraction, and archive-derived `add_uploaded_file()` path are deleted rather than retained behind configuration. Rejected ZIP and mixed batches do not consume Community session-upload records or initiate cleanup callbacks. PHP's request temporary-file lifecycle remains outside plugin control.
+
+The Community form now advertises and selects only ordinary configured `picture_ext` values in both existing upload modes, even when global `upload_form_all_types` or `file_ext` includes `zip`; global configuration is not mutated. Other Community webservice upload transports handle image/chunk payloads but do not list or extract archives, so no unrelated transport was changed.
+
+**Local acceptance evidence 2026-08-10:** `./vendor/bin/phpunit --configuration phpunit.xml.dist tests/Sec03ArchiveDisablementTest.php` passes with 15 tests and 188 assertions. Executable process-level scenarios cover lowercase, uppercase, and mixed-case ZIP names; handcrafted and malformed requests; image/ZIP batches in both orders; traversal, absolute-path, nested, symlink-like, excessive-entry, and high-ratio archive content; no buffer preparation or artifacts; no queries, writes, hooks, moderation records, session consumption, or `add_uploaded_file()` calls; unchanged configuration/request/user/session state; picture-only client filters; and exactly one normal JPEG persistence call. Source assertions and repository searches confirm that Community runtime contains no `PclZip`, `pclzip.lib.php`, archive listing, extraction, or archive-move references.
+
+`./vendor/bin/phpunit --configuration phpunit.xml.dist tests/OriginalSumGuardTest.php` passes with 196 tests and 1052 assertions, with one existing warning and one PHPUnit deprecation. `./vendor/bin/phpunit --configuration phpunit.xml.dist tests/Sec02AdminCsrfTest.php` passes with 22 tests and 532 assertions. The complete configured suite passes with 233 tests and 1772 assertions, with the same warning and deprecation. All four changed PHP/test files pass `php -l`, and `git diff --check` passes. No plugin static-analysis or code-style command is configured. This is local-suite evidence, not GitHub Actions or CI evidence.
+
+**Residual risk:** SEC-04 remains open: ordinary image and chunk transports still lack atomic pre-write byte/photo quota reservations, and request temporary files may consume storage before Community executes. REL-01/02 also remain open. This remediation does not claim generic MIME detection, request-body limits, or control over PHP-created request temporary files.
 
 ## SEC-04: Quotas are post-write and race-prone
 
@@ -91,7 +102,7 @@ The browser path calculates usage after `add_uploaded_file()` has persisted each
 
 **Remediation:** Reserve photo count and bytes atomically before accepting content, enforce hard request/body/archive limits at the web server, and release reservations on failure. Count committed plus reserved usage. Enforce the same policy in all upload transports.
 
-**Update 2026-07-31:** File-backed legacy and `uploadAsync` upload state now retains its small state directory and lock-file placeholder instead of unlinking the lock pathname. This preserves one inode across overlapping requests and removes the unlocked check-then-unlink race while exact upload artifacts are still removed on expiry and completion. This is lock-lifecycle hardening only: retained placeholders require bounded operational cleanup if their count becomes material, and atomic quota reservation, archive limits, and temporary-storage quota enforcement remain open.
+**Update 2026-07-31:** File-backed legacy and `uploadAsync` upload state now retains its small state directory and lock-file placeholder instead of unlinking the lock pathname. This preserves one inode across overlapping requests and removes the unlocked check-then-unlink race while exact upload artifacts are still removed on expiry and completion. This is lock-lifecycle hardening only: retained placeholders require bounded operational cleanup if their count becomes material, and atomic quota reservation and temporary-storage quota enforcement remain open.
 
 ## SEC-05: Upload completion trusts caller-supplied image and category IDs
 
@@ -134,7 +145,7 @@ Piwigo-generated image fields are expected to be safe, but DOM construction with
 
 ## Compensating controls
 
-- Disable ZIP uploads and cap request size, request rate, concurrent uploads, and buffer filesystem usage.
+- Keep Community ZIP uploads disabled and cap request size, request rate, concurrent uploads, and buffer filesystem usage.
 - Grant only moderated permissions to trusted authenticated accounts; guest/generic upload access still requires careful session and storage monitoring.
 - Alert on uploads to albums outside expected contributor scopes and on sudden tag creation.
 - Use a dedicated upload volume with no script execution and restrictive filesystem permissions.
