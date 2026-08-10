@@ -76,9 +76,8 @@ include_once(COMMUNITY_PATH.'include/photos_add_direct_process.inc.php');
 // | limits                                                                |
 // +-----------------------------------------------------------------------+
 
-// has the user reached its limits?
-$user['community_usage'] = community_get_user_limits($user['id']);
-// echo '<pre>'; print_r($user['community_usage']); echo '</pre>';
+// Advisory only; enforcement occurs at the shared reservation boundary.
+$community_quota_usage = community_quota_advisory_usage($user['id']);
 
 // +-----------------------------------------------------------------------+
 // | set properties, moderate, notify                                      |
@@ -97,68 +96,6 @@ SELECT
 ;';
   $images = array_from_query($query);
 
-  $nb_images_deleted = 0;
-  
-  // upload has just happened, maybe the user is over quota
-  if ($user_permissions['storage'] > 0 and $user['community_usage']['storage'] > $user_permissions['storage'])
-  {
-    foreach ($images as $image)
-    {
-      array_push(
-        $page['errors'],
-        sprintf(l10n('Photo %s rejected.'), $image['file'])
-        .' '.sprintf(l10n('Disk usage quota reached (%uMB)'), $user_permissions['storage'])
-        );
-      
-      delete_elements(array($image['id']), true);
-      foreach ($page['thumbnails'] as $tn_idx => $thumbnail)
-      {
-        if ($thumbnail['file'] == $image['file'])
-        {
-          unset($page['thumbnails'][$idx]);
-        }
-      }
-
-      $user['community_usage'] = community_get_user_limits($user['id']);
-      
-      if ($user['community_usage']['storage'] <= $user_permissions['storage'])
-      {
-        // we stop the deletions
-        break;
-      }
-    }
-  }
-
-  if ($user_permissions['nb_photos'] > 0 and $user['community_usage']['nb_photos'] > $user_permissions['nb_photos'])
-  {
-    foreach ($images as $image)
-    {
-      array_push(
-        $page['errors'],
-        sprintf(l10n('Photo %s rejected.'), $image['file'])
-        .' '.sprintf(l10n('Maximum number of photos reached (%u)'), $user_permissions['nb_photos'])
-        );
-      
-      delete_elements(array($image['id']), true);
-      foreach ($page['thumbnails'] as $tn_idx => $thumbnail)
-      {
-        if ($thumbnail['file'] == $image['file'])
-        {
-          unset($page['thumbnails'][$idx]);
-        }
-      }
-
-      $user['community_usage'] = community_get_user_limits($user['id']);
-      
-      if ($user['community_usage']['nb_photos'] <= $user_permissions['nb_photos'])
-      {
-        // we stop the deletions
-        break;
-      }
-    }
-  }
-     
-  
   // reinitialize the informations to display on the result page
   $page['infos'] = array();
 
@@ -282,9 +219,11 @@ $quota_available = array(
 // there is a limit on storage for this user
 if ($user_permissions['storage'] > 0)
 {
-  $remaining_storage = $user_permissions['storage'] - $user['community_usage']['storage'];
+  $storage_limit_bytes = $user_permissions['storage'] * 1024 * 1024;
+  $remaining_storage_bytes = max(0, $storage_limit_bytes - $community_quota_usage['bytes']);
+  $remaining_storage = intdiv($remaining_storage_bytes, 1024 * 1024);
   
-  if ($remaining_storage <= 0)
+  if ($remaining_storage_bytes <= 0)
   {
     // limit reached
     $setup_errors[] = sprintf(
@@ -304,7 +243,7 @@ if ($user_permissions['storage'] > 0)
     
     $template->assign(
       array(
-        'limit_storage' => $remaining_storage*1024*1024,
+        'limit_storage' => $remaining_storage_bytes,
         'limit_storage_total_mb' => $user_permissions['storage'],
         )
       );
@@ -314,7 +253,7 @@ if ($user_permissions['storage'] > 0)
 // there is a limit on number of photos for this user
 if ($user_permissions['nb_photos'] > 0)
 {
-  $remaining_nb_photos = $user_permissions['nb_photos'] - $user['community_usage']['nb_photos'];
+  $remaining_nb_photos = $user_permissions['nb_photos'] - $community_quota_usage['nb_photos'];
   
   if ($remaining_nb_photos <= 0)
   {

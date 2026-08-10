@@ -86,46 +86,116 @@ if (isset($_GET['processed']))
   {
     $starttime = get_moment();
 
-  foreach ($_FILES['image_upload']['error'] as $idx => $error)
-  {
-    if (UPLOAD_ERR_OK == $error)
+    $images_to_add = array();
+    $batch_bytes = 0;
+    $batch_identity_parts = array((string) $category_id);
+    foreach ($_FILES['image_upload']['error'] as $idx => $error)
     {
-      $images_to_add = array();
-      
+      if (UPLOAD_ERR_OK != $error)
+      {
+        continue;
+      }
+
       $extension = pathinfo($_FILES['image_upload']['name'][$idx], PATHINFO_EXTENSION);
-      if (is_valid_image_extension($extension))
+      if (!is_valid_image_extension($extension))
       {
-        $images_to_add[] = array(
-          'source_filepath' => $_FILES['image_upload']['tmp_name'][$idx],
-          'original_filename' => $_FILES['image_upload']['name'][$idx],
-          );
+        continue;
       }
 
-      foreach ($images_to_add as $image_to_add)
+      $source_filepath = $_FILES['image_upload']['tmp_name'][$idx];
+      $file_bytes = is_string($source_filepath) && is_file($source_filepath) ? filesize($source_filepath) : false;
+      $file_sum = is_string($source_filepath) && is_file($source_filepath) ? hash_file('sha256', $source_filepath) : false;
+      if (false === $file_bytes || false === $file_sum || $file_bytes > PHP_INT_MAX - $batch_bytes)
       {
-        $image_id = add_uploaded_file(
-          $image_to_add['source_filepath'],
-          $image_to_add['original_filename'],
-          array($category_id),
-          $_POST['level']
-          );
-
-        $image_ids[] = $image_id;
-
-        // TODO: if $image_id is not an integer, something went wrong
+        $page['errors'][] = l10n('Invalid image upload');
+        $images_to_add = array();
+        break;
       }
-    }
-    else
-    {
-      $error_message = file_upload_error_message($error);
-      
-      $page['errors'][] = l10n(
-        'Error on file "%s" : %s',
-        $_FILES['image_upload']['name'][$idx],
-        $error_message
+
+      $batch_bytes += (int) $file_bytes;
+      $batch_identity_parts[] = $file_sum;
+      $batch_identity_parts[] = $_FILES['image_upload']['name'][$idx];
+      $images_to_add[] = array(
+        'source_filepath' => $source_filepath,
+        'original_filename' => $_FILES['image_upload']['name'][$idx],
         );
     }
-  }
+
+    $direct_reservation = null;
+    $direct_logical_upload_id = hash('sha256', implode("\0", $batch_identity_parts));
+    $direct_request_identity = hash('sha256', implode("\0", array_merge($batch_identity_parts, array(count($images_to_add), $batch_bytes))));
+    if (!empty($images_to_add))
+    {
+      $direct_reservation = community_quota_transport_reserve(
+        'direct',
+        $direct_logical_upload_id,
+        $direct_request_identity,
+        count($images_to_add),
+        $batch_bytes
+      );
+      if ($direct_reservation instanceof PwgError)
+      {
+        $page['errors'][] = community_quota_error_message($direct_reservation);
+        $images_to_add = array();
+      }
+    }
+
+    if (!empty($images_to_add))
+    {
+      $direct_reservation = community_quota_transport_reserve(
+        'direct',
+        $direct_logical_upload_id,
+        $direct_request_identity,
+        count($images_to_add),
+        $batch_bytes
+      );
+      if ($direct_reservation instanceof PwgError)
+      {
+        community_quota_transport_release('direct', $direct_logical_upload_id, $direct_request_identity);
+        $page['errors'][] = community_quota_error_message($direct_reservation);
+        $images_to_add = array();
+      }
+    }
+
+    foreach ($images_to_add as $image_to_add)
+    {
+      $image_id = add_uploaded_file(
+        $image_to_add['source_filepath'],
+        $image_to_add['original_filename'],
+        array($category_id),
+        $_POST['level']
+        );
+
+      $image_ids[] = $image_id;
+
+      // TODO: if $image_id is not an integer, something went wrong
+    }
+
+    if (is_array($direct_reservation))
+    {
+      if (empty($image_ids))
+      {
+        community_quota_transport_release('direct', $direct_logical_upload_id, $direct_request_identity);
+      }
+      else
+      {
+        community_quota_transport_settle('direct', $direct_logical_upload_id, $direct_request_identity);
+      }
+    }
+
+    foreach ($_FILES['image_upload']['error'] as $idx => $error)
+    {
+      if (UPLOAD_ERR_OK != $error)
+      {
+        $error_message = file_upload_error_message($error);
+
+        $page['errors'][] = l10n(
+          'Error on file "%s" : %s',
+          $_FILES['image_upload']['name'][$idx],
+          $error_message
+          );
+      }
+    }
   
   $endtime = get_moment();
   $elapsed = ($endtime - $starttime) * 1000;

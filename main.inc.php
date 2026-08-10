@@ -24,8 +24,11 @@ defined('COMMUNITY_ID') or define('COMMUNITY_ID', basename(dirname(__FILE__)));
 define('COMMUNITY_PATH' , PHPWG_PLUGINS_PATH.basename(dirname(__FILE__)).'/');
 define('COMMUNITY_PERMISSIONS_TABLE', $prefixeTable.'community_permissions');
 define('COMMUNITY_PENDINGS_TABLE', $prefixeTable.'community_pendings');
+define('COMMUNITY_QUOTA_LOCKS_TABLE', $prefixeTable.'community_quota_locks');
+define('COMMUNITY_QUOTA_RESERVATIONS_TABLE', $prefixeTable.'community_quota_reservations');
 
 include_once(COMMUNITY_PATH.'include/functions_community.inc.php');
+include_once(COMMUNITY_PATH.'include/quota_reservation.inc.php');
 include_once(COMMUNITY_PATH.'include/original_sum_guard.inc.php');
 
 // init the plugin

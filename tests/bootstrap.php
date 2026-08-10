@@ -5,6 +5,7 @@ define('IN_WS', true);
 define('CATEGORIES_TABLE', 'piwigo_categories');
 define('IMAGE_CATEGORY_TABLE', 'piwigo_image_category');
 define('IMAGES_TABLE', 'piwigo_images');
+define('IMAGE_FORMAT_TABLE', 'piwigo_image_format');
 define('ACTIVITY_TABLE', 'piwigo_activity');
 define('LOUNGE_TABLE', 'piwigo_lounge');
 define('TAGS_TABLE', 'piwigo_tags');
@@ -556,6 +557,13 @@ function community_test_reset_runtime()
     $GLOBALS['community_ws_images_delete_delegate'],
     $GLOBALS['community_ws_categories_add_delegate'],
     $GLOBALS['community_ws_tags_add_delegate'],
+    $GLOBALS['community_quota_uploaded_file_request_callback'],
+    $GLOBALS['community_quota_persistence_delta_callback'],
+    $GLOBALS['community_quota_test_snapshot_callback'],
+    $GLOBALS['community_quota_after_user_lock_callback'],
+    $GLOBALS['community_quota_transport_reserve_callback'],
+    $GLOBALS['community_quota_transport_release_callback'],
+    $GLOBALS['community_quota_transport_settle_callback'],
     $GLOBALS['community_test']['category_before_second_authorization'],
     $GLOBALS['community_test']['tag_before_second_authorization'],
     $GLOBALS['community_test_write_json_file_callback']
@@ -594,6 +602,28 @@ function community_test_reset_runtime()
 
   $community = array();
   $logger = new CommunityTestLogger();
+
+  $GLOBALS['community_quota_uploaded_file_request_callback'] = function () {
+    return array(
+      'logical_upload_id' => 'test-logical-upload',
+      'request_identity' => 'test-request-identity',
+      'photos' => 1,
+      'bytes' => 1,
+    );
+  };
+  $GLOBALS['community_quota_transport_reserve_callback'] = function () {
+    return array(
+      'reservation_id' => 'test-reservation',
+      'reserved_photos' => 1,
+      'reserved_bytes' => 1,
+    );
+  };
+  $GLOBALS['community_quota_transport_release_callback'] = function () {
+    return true;
+  };
+  $GLOBALS['community_quota_transport_settle_callback'] = function () {
+    return true;
+  };
 }
 
 function community_test_register_core_upload_methods($arr)

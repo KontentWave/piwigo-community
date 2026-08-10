@@ -221,8 +221,6 @@ var limit_storage = {$limit_storage};
 		// url : '../upload.php',
 		url : rootUrl + 'ws.php?method=pwg.images.upload&format=json',
 		
-		chunk_size: '{/literal}{$chunk_size}{literal}kb',
-		
 		filters : {
 			// Maximum file size
 			max_file_size : '{/literal}{$upload_max_filesize}{literal}',

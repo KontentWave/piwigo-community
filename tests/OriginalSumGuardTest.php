@@ -2037,6 +2037,7 @@ class OriginalSumGuardTest extends TestCase
 
       return array('image_id' => 456, 'category' => array('id' => 1));
     };
+    $_FILES['file'] = community_test_create_uploaded_chunk('multipart-upload', 'upload.jpg');
 
     $result = $service->invoke('pwg.images.upload', array(
       'category' => '1',
@@ -2135,6 +2136,7 @@ class OriginalSumGuardTest extends TestCase
 
       return array('image_id' => 77, 'category' => array('id' => 1));
     };
+    $_FILES['file'] = community_test_create_uploaded_chunk('multipart-format', 'format.jpg');
 
     $result = $service->invoke('pwg.images.upload', array(
       'category' => '1',

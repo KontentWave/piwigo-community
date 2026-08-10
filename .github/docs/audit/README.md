@@ -6,7 +6,7 @@ Scope: `/home/marcel/projects/piwigo/plugins/community`
 
 ## Executive verdict
 
-The plugin should not be treated as production-hardened without compensating controls and remediation. Its core authorization model is understandable, and scoped webservice adapters, legacy checksum guards, and POST-only CSRF-protected administrator mutations now address SEC-01, SEC-06, and SEC-02. Upload quotas are still enforced after files are committed, ZIP processing has no explicit expansion or path-safety limits, and the MyISAM schema prevents transactional moderation workflows.
+The plugin should not be treated as production-hardened without compensating controls and remediation. Scoped webservice adapters, legacy checksum guards, POST-only CSRF-protected administrator mutations, removed ZIP support, and atomic pre-write quota reservations now address SEC-01, SEC-02, SEC-03, SEC-04, and SEC-06. The remaining MyISAM moderation schema and filesystem/database recovery gaps prevent transactional upload and moderation workflows.
 
 The recommended release posture is **conditional / remediation required**. Resolve all Critical and High findings before broad untrusted-user deployment. Resolve Medium reliability findings before promising upload or moderation durability.
 
@@ -26,7 +26,7 @@ This was a static production-readiness audit of plugin-owned PHP, Smarty templat
 
 Generated and third-party artifacts were reviewed by role and provenance rather than line by line: Fontello binaries and generated CSS, translated copies of the canonical language catalog, and license/readme assets. The plugin-owned executable paths received line-level review.
 
-No dynamic penetration test, concurrent upload load test, database migration rehearsal, browser compatibility matrix, or mail-delivery test was performed. Findings marked as architectural risks should be confirmed in a staging environment matching production PHP, database, web server, storage, and Piwigo versions.
+The original audit was static. Subsequent remediation added local PHPUnit lifecycle tests, isolated process tests, a real two-process MariaDB quota race, and temporary-prefix quota-schema install/update/uninstall tests. No dynamic penetration test, sustained concurrent upload load test, browser compatibility matrix, or mail-delivery test was performed. Findings marked as architectural risks should be confirmed in a staging environment matching production PHP, database, web server, storage, and Piwigo versions.
 
 ## Severity model
 

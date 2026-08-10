@@ -43,6 +43,35 @@ CREATE TABLE IF NOT EXISTS '.$prefixeTable.'community_pendings (
 ;';
     pwg_query($query);
 
+    $query = '
+CREATE TABLE IF NOT EXISTS '.$prefixeTable.'community_quota_locks (
+  `user_id` mediumint(8) unsigned NOT NULL,
+  `updated_at` datetime NOT NULL,
+  PRIMARY KEY (`user_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8
+;';
+    pwg_query($query);
+
+    $query = '
+CREATE TABLE IF NOT EXISTS '.$prefixeTable.'community_quota_reservations (
+  `reservation_id` char(32) NOT NULL,
+  `user_id` mediumint(8) unsigned NOT NULL,
+  `transport` varchar(32) NOT NULL,
+  `logical_upload_id` char(64) NOT NULL,
+  `request_identity` char(64) NOT NULL,
+  `reserved_photos` bigint unsigned NOT NULL DEFAULT 0,
+  `reserved_bytes` bigint unsigned NOT NULL DEFAULT 0,
+  `created_at` datetime NOT NULL,
+  `refreshed_at` datetime NOT NULL,
+  `expires_at` datetime NOT NULL,
+  PRIMARY KEY (`reservation_id`),
+  UNIQUE KEY `logical_upload` (`user_id`, `transport`, `logical_upload_id`),
+  KEY `user_expiry` (`user_id`, `expires_at`),
+  KEY `expires_at` (`expires_at`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8
+;';
+    pwg_query($query);
+
     // column community_permissions.nb_photos added for version 2.5.d
     $result = pwg_query('SHOW COLUMNS FROM `'.$prefixeTable.'community_permissions` LIKE "nb_photos";');
     if (!pwg_db_num_rows($result))
@@ -182,6 +211,12 @@ SELECT
   function uninstall()
   {
     global $prefixeTable;
+
+    $query = 'DROP TABLE IF EXISTS '.$prefixeTable.'community_quota_reservations;';
+    pwg_query($query);
+
+    $query = 'DROP TABLE IF EXISTS '.$prefixeTable.'community_quota_locks;';
+    pwg_query($query);
   
     $query = 'DROP TABLE '.$prefixeTable.'community_permissions;';
     pwg_query($query);

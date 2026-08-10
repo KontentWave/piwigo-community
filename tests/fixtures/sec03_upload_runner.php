@@ -16,6 +16,13 @@ define('IMAGES_TABLE', 'images');
 define('IMAGE_CATEGORY_TABLE', 'image_category');
 define('PHOTOS_ADD_BASE_URL', '/index.php?/add_photos');
 
+class PwgError
+{
+  public function __construct(public $code, public $message)
+  {
+  }
+}
+
 class DerivativeImage
 {
   public static function thumb_url($image)
@@ -123,7 +130,22 @@ $GLOBALS['sec03'] = array(
   'queries' => array(),
   'hooks' => array(),
   'moderation_records' => array(),
+  'quota_reservations' => array(),
 );
+
+include COMMUNITY_PATH.'include/quota_reservation.inc.php';
+
+$GLOBALS['community_quota_transport_reserve_callback'] = function ($transport, $logicalUploadId, $requestIdentity, $photos, $bytes) use ($input) {
+  $GLOBALS['sec03']['quota_reservations'][] = compact('transport', 'logicalUploadId', 'requestIdentity', 'photos', 'bytes');
+  if (!empty($input['quota_denied']))
+  {
+    return community_quota_error();
+  }
+
+  return array('reservation_id' => 'fixture', 'reserved_photos' => $photos, 'reserved_bytes' => $bytes);
+};
+$GLOBALS['community_quota_transport_release_callback'] = fn () => true;
+$GLOBALS['community_quota_transport_settle_callback'] = fn () => true;
 
 $conf = array(
   'upload_dir' => $uploadRoot,

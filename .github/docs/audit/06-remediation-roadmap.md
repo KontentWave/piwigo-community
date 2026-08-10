@@ -28,6 +28,8 @@ Target: first patch release.
    Status 2026-08-10: completed. Permission save/delete, configuration save, album-owner save, and pending validate/reject now use POST-only, strict scalar action dispatch and call `check_pwg_token()` before action-specific validation, reads, writes, destructive callbacks, cache invalidation, or redirects. Templates submit the current token and exactly one action, pending bulk/AJAX paths share the canonical contract, and permission deletion is an accessible confirmed POST control while GET editing remains read-only. Isolated controller lifecycle tests prove valid operations occur exactly once and denied or malformed requests have zero modeled side effects. The focused local suite passes with 22 tests and 532 assertions; the complete configured local suite passes with 218 tests and 1584 assertions, with one existing warning and one PHPUnit deprecation. This is local-suite evidence, not GitHub Actions or CI evidence.
 7. Add archive path and resource limits or remove archive support.
    Status 2026-08-10: completed by removal. The direct-upload processor preflights every successful filename before processing any file and rejects complete ZIP or mixed batches case-insensitively. PclZip loading, archive moves, listing, extraction, buffer artifacts, and archive-derived persistence are removed; the Community uploader uses only a local copy of configured picture extensions without mutating global configuration. Other Community upload transports do not extract archives. The focused local suite passes with 15 tests and 188 assertions, and the complete configured suite passes with 233 tests and 1772 assertions, with one existing warning and one PHPUnit deprecation. This is local-suite evidence, not GitHub Actions or CI evidence. Community ZIP upload removal is an intentional compatibility change; SEC-04 and REL-01/02 remain open.
+8. Enforce atomic pre-write photo and storage quotas across Community transports.
+   Status 2026-08-10: completed for SEC-04. Two InnoDB tables provide one stable user lock and durable actor/transport/logical-upload reservations. Direct batches reserve atomically before their first image; `addSimple`, single multipart `upload`, `uploadAsync`, and legacy `addChunk`/`add` share the same committed-plus-reserved boundary, exact-target retries, final revalidation, and release/settle lifecycle. Raw-body and core append-chunk `pwg.images.upload` are intentionally rejected for Community actors because trusted actual bytes are unavailable before the core buffer write; the Community browser sends one multipart request per file. A real two-process MariaDB 11.4.8 barrier test proves one winner for independent photo and byte races. The focused suite passes with 22 tests and 142 assertions and the complete configured suite with 255 tests and 1914 assertions, with one existing warning and one PHPUnit deprecation. This is local process/database evidence, not GitHub Actions or CI evidence. Web-server body/rate/concurrency/global-buffer controls and REL-01/02 recovery remain open.
 
 Acceptance tests:
 
@@ -53,8 +55,8 @@ Acceptance tests:
 
 Target: second patch/minor release.
 
-1. Correct the `$idx` rollback bug and remove repeated full-history quota aggregation during rollback.
-2. Introduce atomic byte/photo reservations shared by all upload transports.
+1. Correct the `$idx` rollback bug and remove repeated full-history quota aggregation during rollback. Completed 2026-08-10 by deleting the post-write quota rollback path.
+2. Introduce atomic byte/photo reservations shared by all upload transports. Completed 2026-08-10 for SEC-04 with real MariaDB concurrency evidence.
 3. Migrate plugin tables to InnoDB with primary, unique, and query indexes.
 4. Implement explicit moderation states and transaction-aware transitions.
 5. Stage files outside public visibility until commit; add idempotent reconciliation.
@@ -67,6 +69,8 @@ Acceptance tests:
 - Failure injection after every write leaves a recoverable state and no visible unmoderated image.
 - Validation/rejection is idempotent under retries and concurrent administrators.
 - Migration preserves grants, ownership, pending state, and cache behavior on production-sized copies.
+
+SEC-04 evidence covers parallel count/byte quota races and idempotent quota-table install/update/uninstall with active-state preservation. The broader failure-recovery and production-sized migration criteria remain REL-01/02 work.
 
 ## Phase 3: Maintainable boundaries
 

@@ -910,6 +910,40 @@ function community_upload_async_manifest_matches($manifest, $manifest_request)
   return true;
 }
 
+function community_upload_async_quota_identity($manifest)
+{
+  $request_keys = array(
+    'user_id',
+    'session_id',
+    'category',
+    'original_sum',
+    'chunks',
+    'image_id',
+    'filename',
+    'name',
+    'author',
+    'comment',
+    'date_creation',
+    'level',
+    'tag_ids',
+  );
+  $request = array();
+  foreach ($request_keys as $key)
+  {
+    if (!array_key_exists($key, $manifest))
+    {
+      return null;
+    }
+
+    $request[$key] = $manifest[$key];
+  }
+
+  return array(
+    'logical_upload_id' => (string) $request['original_sum'],
+    'request_identity' => hash('sha256', json_encode($request)),
+  );
+}
+
 function community_read_json_file($filepath)
 {
   if (!is_file($filepath))
@@ -2017,9 +2051,34 @@ function community_ws_images_add_simple($params, $service)
     return community_access_denied_error();
   }
 
-  $result = community_call_ws_images_add_simple($params, $service);
-  if (!($result instanceof PwgError))
+  $quota_request = isset($_FILES['image'])
+    ? community_quota_uploaded_file_request('addSimple', $_FILES['image'], $params)
+    : null;
+  if (!isset($quota_request))
   {
+    return community_invalid_mutation_parameter_error('Invalid image upload');
+  }
+
+  $reservation = community_quota_transport_reserve(
+    'addSimple',
+    $quota_request['logical_upload_id'],
+    $quota_request['request_identity'],
+    $quota_request['photos'],
+    $quota_request['bytes']
+  );
+  if ($reservation instanceof PwgError)
+  {
+    return $reservation;
+  }
+
+  $result = community_call_ws_images_add_simple($params, $service);
+  if ($result instanceof PwgError)
+  {
+    community_quota_transport_release('addSimple', $quota_request['logical_upload_id'], $quota_request['request_identity']);
+  }
+  else
+  {
+    community_quota_transport_settle('addSimple', $quota_request['logical_upload_id'], $quota_request['request_identity']);
     $community['method'] = 'pwg.images.addSimple';
     $community['category'] = $authorized_categories[0];
 
@@ -2059,9 +2118,42 @@ function community_ws_images_upload($params, $service)
     return community_access_denied_error();
   }
 
-  $result = community_call_ws_images_upload($params, $service);
-  if (!($result instanceof PwgError))
+  if (
+    !isset($_FILES['file'])
+    || !is_array($_FILES['file'])
+    || !empty($_REQUEST['chunk'])
+    || (!empty($_REQUEST['chunks']) && (int) $_REQUEST['chunks'] > 1)
+  )
   {
+    return community_invalid_mutation_parameter_error('Community uploads require a single multipart file');
+  }
+
+  $quota_request = community_quota_uploaded_file_request('upload', $_FILES['file'], $params);
+  if (!isset($quota_request))
+  {
+    return community_invalid_mutation_parameter_error('Invalid image upload');
+  }
+
+  $reservation = community_quota_transport_reserve(
+    'upload',
+    $quota_request['logical_upload_id'],
+    $quota_request['request_identity'],
+    $quota_request['photos'],
+    $quota_request['bytes']
+  );
+  if ($reservation instanceof PwgError)
+  {
+    return $reservation;
+  }
+
+  $result = community_call_ws_images_upload($params, $service);
+  if ($result instanceof PwgError)
+  {
+    community_quota_transport_release('upload', $quota_request['logical_upload_id'], $quota_request['request_identity']);
+  }
+  else
+  {
+    community_quota_transport_settle('upload', $quota_request['logical_upload_id'], $quota_request['request_identity']);
     $community['method'] = 'pwg.images.upload';
     $community['category'] = $authorized_categories[0];
   }
@@ -2194,6 +2286,11 @@ function community_ws_images_upload_async($params, $service)
     $manifest = community_read_json_file($paths['manifest_file']);
     if (is_array($manifest) && isset($manifest['expires_at']) && $manifest['expires_at'] < time())
     {
+      $quota_identity = community_upload_async_quota_identity($manifest);
+      if (isset($quota_identity))
+      {
+        community_quota_transport_release('uploadAsync', $quota_identity['logical_upload_id'], $quota_identity['request_identity']);
+      }
       community_cleanup_upload_async_artifacts($manifest, $paths, true);
       $cleanup_state_dir_after_unlock = true;
       $manifest = null;
@@ -2242,16 +2339,40 @@ function community_ws_images_upload_async($params, $service)
       }
       else
       {
-        if ($manifest['received_bytes'] + $chunk_size > $limits['max_total_bytes'])
+        $target_bytes = (int) $manifest['received_bytes'] + (int) $chunk_size;
+        $logical_upload_id = (string) $manifest_request['original_sum'];
+        $request_identity = hash('sha256', json_encode($manifest_request));
+        $delta = community_quota_persistence_delta(
+          $target_bytes,
+          empty($manifest_request['image_id']) ? null : (int) $manifest_request['image_id']
+        );
+        $reservation = community_quota_transport_reserve(
+          'uploadAsync',
+          $logical_upload_id,
+          $request_identity,
+          $delta['photos'],
+          $delta['bytes']
+        );
+
+        if ($reservation instanceof PwgError)
         {
+          community_cleanup_upload_async_artifacts($manifest, $paths, true);
+          $cleanup_state_dir_after_unlock = true;
+          $result = $reservation;
+        }
+        elseif ($target_bytes > $limits['max_total_bytes'])
+        {
+          community_quota_transport_release('uploadAsync', $logical_upload_id, $request_identity);
           $result = community_upload_async_size_error('Upload exceeds the configured cumulative size limit');
         }
         elseif (!community_ensure_directory($paths['chunks_dir']))
         {
+          community_quota_transport_release('uploadAsync', $logical_upload_id, $request_identity);
           $result = new PwgError(500, 'Unable to prepare upload chunk directory');
         }
         elseif (!@copy($tmp_name, $chunk_path))
         {
+          community_quota_transport_release('uploadAsync', $logical_upload_id, $request_identity);
           $result = new PwgError(500, 'Unable to persist the uploaded chunk');
         }
         else
@@ -2268,6 +2389,7 @@ function community_ws_images_upload_async($params, $service)
             community_delete_path($chunk_path);
             unset($manifest['chunk_map'][$chunk_key]);
             $manifest['received_bytes'] -= (int) $chunk_size;
+            community_quota_transport_release('uploadAsync', $logical_upload_id, $request_identity);
             $result = new PwgError(500, 'Unable to persist upload state');
           }
         }
@@ -2282,15 +2404,50 @@ function community_ws_images_upload_async($params, $service)
       }
       elseif (!community_revalidate_upload_async_final_manifest($manifest))
       {
+        $quota_identity = community_upload_async_quota_identity($manifest);
+        if (isset($quota_identity))
+        {
+          community_quota_transport_release('uploadAsync', $quota_identity['logical_upload_id'], $quota_identity['request_identity']);
+        }
+        community_cleanup_upload_async_artifacts($manifest, $paths, true);
+        $cleanup_state_dir_after_unlock = true;
         $result = community_access_denied_error();
       }
       else
+      {
+        $logical_upload_id = (string) $manifest_request['original_sum'];
+        $request_identity = hash('sha256', json_encode($manifest_request));
+        $delta = community_quota_persistence_delta(
+          (int) $manifest['received_bytes'],
+          empty($manifest_request['image_id']) ? null : (int) $manifest_request['image_id']
+        );
+        $reservation = community_quota_transport_reserve(
+          'uploadAsync',
+          $logical_upload_id,
+          $request_identity,
+          $delta['photos'],
+          $delta['bytes']
+        );
+
+        if ($reservation instanceof PwgError)
+        {
+          community_quota_transport_release('uploadAsync', $logical_upload_id, $request_identity);
+          community_cleanup_upload_async_artifacts($manifest, $paths, true);
+          $cleanup_state_dir_after_unlock = true;
+          $result = $reservation;
+        }
+      }
+
+      if (!isset($result) && community_upload_async_all_chunks_present($manifest))
       {
         community_delete_path($paths['merged_file']);
 
         $merged_handle = fopen($paths['merged_file'], 'wb');
         if (false === $merged_handle)
         {
+          community_quota_transport_release('uploadAsync', $logical_upload_id, $request_identity);
+          community_cleanup_upload_async_artifacts($manifest, $paths, true);
+          $cleanup_state_dir_after_unlock = true;
           $result = new PwgError(500, 'Unable to prepare merged upload file');
         }
         else
@@ -2301,6 +2458,7 @@ function community_ws_images_upload_async($params, $service)
             $chunk_contents = file_get_contents($stored_chunk_path);
             if (false === $chunk_contents || false === fwrite($merged_handle, $chunk_contents))
             {
+              community_quota_transport_release('uploadAsync', $logical_upload_id, $request_identity);
               $result = new PwgError(500, 'Unable to merge uploaded chunks');
               break;
             }
@@ -2314,6 +2472,7 @@ function community_ws_images_upload_async($params, $service)
           $merged_sum = md5_file($paths['merged_file']);
           if (false === $merged_sum || strtolower($merged_sum) !== strtolower($manifest['original_sum']))
           {
+            community_quota_transport_release('uploadAsync', $logical_upload_id, $request_identity);
             $result = community_upload_async_invalid_param_error('Merged upload checksum mismatched');
             community_cleanup_upload_async_artifacts($manifest, $paths, true);
             $cleanup_state_dir_after_unlock = true;
@@ -2333,6 +2492,7 @@ function community_ws_images_upload_async($params, $service)
             $result = community_finalize_ws_images_upload_async($final_params, $service, $paths['merged_file']);
             if ($result instanceof PwgError)
             {
+              community_quota_transport_release('uploadAsync', $logical_upload_id, $request_identity);
               community_delete_path($paths['merged_file']);
             }
             else
@@ -2364,6 +2524,7 @@ function community_ws_images_upload_async($params, $service)
                 {
                   community_delete_path($paths['merged_file']);
                   community_delete_path($paths['chunks_dir']);
+                  community_quota_transport_settle('uploadAsync', (string) $manifest_request['original_sum'], hash('sha256', json_encode($manifest_request)));
                   $community['method'] = 'pwg.images.uploadAsync';
                   $community['category'] = $authorized_categories[0];
                 }
@@ -2371,6 +2532,7 @@ function community_ws_images_upload_async($params, $service)
               else
               {
                 community_cleanup_upload_async_artifacts($manifest, $paths, false);
+                community_quota_transport_settle('uploadAsync', (string) $manifest_request['original_sum'], hash('sha256', json_encode($manifest_request)));
                 $community['method'] = 'pwg.images.uploadAsync';
                 $community['category'] = $authorized_categories[0];
               }
@@ -2613,6 +2775,35 @@ function community_legacy_add_select_original_type($manifest)
   return null;
 }
 
+function community_legacy_add_reserved_bytes($manifest)
+{
+  $reserved_bytes = 0;
+  if (!isset($manifest['chunks']) || !is_array($manifest['chunks']))
+  {
+    return null;
+  }
+
+  foreach ($manifest['chunks'] as $manifest_chunks)
+  {
+    if (!is_array($manifest_chunks))
+    {
+      return null;
+    }
+
+    foreach ($manifest_chunks as $manifest_chunk)
+    {
+      if (!isset($manifest_chunk['size']) || !is_int($manifest_chunk['size']) || $manifest_chunk['size'] < 0 || $reserved_bytes > PHP_INT_MAX - $manifest_chunk['size'])
+      {
+        return null;
+      }
+
+      $reserved_bytes += $manifest_chunk['size'];
+    }
+  }
+
+  return $reserved_bytes;
+}
+
 function community_merge_legacy_add_chunks($manifest, $paths, $type)
 {
   if (!isset($manifest['chunks'][$type]) || !is_array($manifest['chunks'][$type]) || count($manifest['chunks'][$type]) === 0)
@@ -2830,6 +3021,10 @@ function community_ws_images_add($params, $service)
   $manifest = community_read_json_file($paths['manifest_file']);
   if (community_legacy_add_manifest_is_expired($manifest))
   {
+    if (is_array($manifest) && isset($manifest['quota_identity']))
+    {
+      community_quota_transport_release('addChunk', strtolower($params['original_sum']), (string) $manifest['quota_identity']);
+    }
     community_cleanup_legacy_add_artifacts($paths);
     flock($lock_handle, LOCK_UN);
     fclose($lock_handle);
@@ -2845,9 +3040,43 @@ function community_ws_images_add($params, $service)
     return community_access_denied_error();
   }
 
+  $request_identity = isset($manifest['quota_identity']) ? (string) $manifest['quota_identity'] : '';
+  $reserved_bytes = community_legacy_add_reserved_bytes($manifest);
+  if ('' === $request_identity || !isset($reserved_bytes))
+  {
+    community_quota_transport_release('addChunk', strtolower($params['original_sum']), $request_identity);
+    community_cleanup_legacy_add_artifacts($paths);
+    flock($lock_handle, LOCK_UN);
+    fclose($lock_handle);
+
+    return community_access_denied_error();
+  }
+
+  $delta = community_quota_persistence_delta(
+    $reserved_bytes,
+    empty($params['image_id']) ? null : (int) $params['image_id']
+  );
+  $reservation = community_quota_transport_reserve(
+    'addChunk',
+    strtolower($params['original_sum']),
+    $request_identity,
+    $delta['photos'],
+    $delta['bytes']
+  );
+  if ($reservation instanceof PwgError)
+  {
+    community_cleanup_legacy_add_artifacts($paths);
+    flock($lock_handle, LOCK_UN);
+    fclose($lock_handle);
+
+    return $reservation;
+  }
+
   $original_type = community_legacy_add_select_original_type($manifest);
   if (!isset($original_type))
   {
+    community_quota_transport_release('addChunk', strtolower($params['original_sum']), $request_identity);
+    community_cleanup_legacy_add_artifacts($paths);
     flock($lock_handle, LOCK_UN);
     fclose($lock_handle);
 
@@ -2857,6 +3086,8 @@ function community_ws_images_add($params, $service)
   $merged_filepath = community_merge_legacy_add_chunks($manifest, $paths, $original_type);
   if ($merged_filepath instanceof PwgError)
   {
+    community_quota_transport_release('addChunk', strtolower($params['original_sum']), $request_identity);
+    community_cleanup_legacy_add_artifacts($paths);
     flock($lock_handle, LOCK_UN);
     fclose($lock_handle);
 
@@ -2866,9 +3097,14 @@ function community_ws_images_add($params, $service)
   $result = community_finalize_legacy_ws_images_add($params, $merged_filepath, $authorized_categories);
   if (!($result instanceof PwgError))
   {
+    community_quota_transport_settle('addChunk', strtolower($params['original_sum']), $request_identity);
     $community['method'] = 'pwg.images.add';
     $community['category'] = $authorized_categories['ids'][0];
     $community['md5sum'] = $params['original_sum'];
+  }
+  else
+  {
+    community_quota_transport_release('addChunk', strtolower($params['original_sum']), $request_identity);
   }
 
   community_cleanup_legacy_add_artifacts($paths);
@@ -2904,7 +3140,7 @@ function community_ws_images_add_chunk($params, $service)
   }
 
   $paths = community_get_legacy_add_state_paths($params['original_sum']);
-  if (!community_ensure_directory($paths['chunks_dir']))
+  if (!community_ensure_directory($paths['state_dir']))
   {
     return new PwgError(500, 'Unable to prepare upload state directory');
   }
@@ -2938,6 +3174,11 @@ function community_ws_images_add_chunk($params, $service)
       'user_id' => (int) $user['id'],
       'session_id' => community_get_upload_async_session_identity(),
       'original_sum' => $params['original_sum'],
+      'quota_identity' => hash('sha256', implode("\0", array(
+        (int) $user['id'],
+        community_get_upload_async_session_identity(),
+        strtolower($params['original_sum']),
+      ))),
       'chunks' => array(),
     );
   }
@@ -2980,8 +3221,52 @@ function community_ws_images_add_chunk($params, $service)
     return community_upload_async_conflict_error('Conflicting chunk retry');
   }
 
+  $target_bytes = $chunk_size;
+  foreach ($manifest['chunks'] as $manifest_chunks)
+  {
+    foreach ($manifest_chunks as $manifest_chunk)
+    {
+      if (!isset($manifest_chunk['size']) || !is_int($manifest_chunk['size']) || $manifest_chunk['size'] < 0 || $target_bytes > PHP_INT_MAX - $manifest_chunk['size'])
+      {
+        flock($lock_handle, LOCK_UN);
+        fclose($lock_handle);
+
+        return community_quota_error();
+      }
+
+      $target_bytes += $manifest_chunk['size'];
+    }
+  }
+
+  $request_identity = isset($manifest['quota_identity']) ? (string) $manifest['quota_identity'] : '';
+  $reservation = community_quota_transport_reserve(
+    'addChunk',
+    strtolower($params['original_sum']),
+    $request_identity,
+    1,
+    $target_bytes
+  );
+  if ($reservation instanceof PwgError)
+  {
+    community_cleanup_legacy_add_artifacts($paths);
+    flock($lock_handle, LOCK_UN);
+    fclose($lock_handle);
+
+    return $reservation;
+  }
+
+  if (!community_ensure_directory($paths['chunks_dir']))
+  {
+    community_quota_transport_release('addChunk', strtolower($params['original_sum']), $request_identity);
+    flock($lock_handle, LOCK_UN);
+    fclose($lock_handle);
+
+    return new PwgError(500, 'Unable to prepare upload chunk directory');
+  }
+
   if (false === file_put_contents($chunk_path, $chunk_contents, LOCK_EX))
   {
+    community_quota_transport_release('addChunk', strtolower($params['original_sum']), $request_identity);
     flock($lock_handle, LOCK_UN);
     fclose($lock_handle);
 
@@ -2995,6 +3280,8 @@ function community_ws_images_add_chunk($params, $service)
 
   if (!community_write_json_file($paths['manifest_file'], $manifest))
   {
+    community_delete_path($chunk_path);
+    community_quota_transport_release('addChunk', strtolower($params['original_sum']), $request_identity);
     flock($lock_handle, LOCK_UN);
     fclose($lock_handle);
 

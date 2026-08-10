@@ -21,7 +21,7 @@
 // | USA.                                                                  |
 // +-----------------------------------------------------------------------+
 
-function community_get_user_permissions($user_id)
+function community_get_user_permissions($user_id, $use_cache = true)
 {
   // echo __FUNCTION__.' => call for user '.$user_id.'<br>';
   
@@ -39,6 +39,8 @@ function community_get_user_permissions($user_id)
   // $_SESSION['community_user_id'] to force refresh if the permissions were
   // not calculated for the right user
   if (
+    $use_cache
+    and
     isset($_SESSION['community_user_id'])
     and $_SESSION['community_user_id'] == $user_id
     and $_SESSION['community_cache_key'] == $cache_key
