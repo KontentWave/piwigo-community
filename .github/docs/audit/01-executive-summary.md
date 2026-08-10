@@ -5,19 +5,21 @@ Release posture: **Conditional, remediation required**
 
 ## Decision
 
-Do not expose this version to broadly untrusted uploaders until SEC-02 through SEC-04 are resolved. The plugin has a coherent permission model and uses Piwigo validation helpers in many places, but administrator mutations still lack consistent CSRF protection, ZIP extraction remains unbounded, and the browser upload path still commits files before applying quotas and moderation state.
+Do not expose this version to broadly untrusted uploaders until SEC-03 and SEC-04 are resolved. The plugin has a coherent permission model and now protects administrator mutations with strict POST actions and canonical CSRF tokens, but ZIP extraction remains unbounded and the browser upload path still commits files before applying quotas and moderation state.
 
 Update 2026-07-30: SEC-06 has plugin-owned guards and acceptance tests for `pwg.images.add`, `pwg.images.addChunk`, and filename uniqueness prechecks. The overall release posture does not change because the broader authorization and upload-flow findings remain open.
 
-Update 2026-07-31: SEC-01 is remediated. Community upload webservices and compatibility helpers now use method-specific authorization without administrator impersonation; the full configured PHPUnit suite passes with 196 tests and 1052 assertions. The release posture remains conditional because SEC-02 through SEC-04 and REL-01/02 remain open.
+Update 2026-07-31: SEC-01 is remediated. Community upload webservices and compatibility helpers now use method-specific authorization without administrator impersonation; the local `tests/OriginalSumGuardTest.php` suite passes with 196 tests and 1052 assertions. This is local PHPUnit evidence, not GitHub Actions or CI evidence. At that date, SEC-02, SEC-03, SEC-04, and REL-01/02 remained open.
 
-For a small, trusted contributor group behind normal Piwigo authentication, deployment can continue temporarily with ZIP uploads disabled, tightly scoped Community permissions, monitored storage, and administrator CSRF protections supplied at the reverse proxy or application layer. These are compensating controls, not fixes.
+Update 2026-08-10: SEC-02 is remediated. Administrator permission, configuration, album ownership, and pending-photo mutations now require POST, one strict action, and Piwigo's canonical token before mutation-specific work; permission deletion is no longer available through GET. The focused local suite passes with 22 tests and 532 assertions, and the complete configured local suite passes with 218 tests and 1584 assertions, with one existing warning and one PHPUnit deprecation. This is local-suite evidence, not GitHub Actions or CI evidence. The release posture remains conditional because SEC-03, SEC-04, and REL-01/02 remain open.
+
+For a small, trusted contributor group behind normal Piwigo authentication, deployment can continue temporarily with ZIP uploads disabled, tightly scoped Community permissions, and monitored storage. These are compensating controls for the remaining findings, not fixes.
 
 ## Risk profile
 
 | Area            | Rating | Main reason                                                                                      |
 | --------------- | ------ | ------------------------------------------------------------------------------------------------ |
-| Security        | High   | Administrator CSRF, unbounded ZIP extraction, and race-prone quotas remain open.                 |
+| Security        | High   | Unbounded ZIP extraction and race-prone quotas remain open.                                      |
 | Reliability     | High   | Upload, quota, moderation, notification, and deletion are not atomic.                            |
 | Optimization    | Medium | Permission evaluation scans albums and edit pages materialize full user image sets.              |
 | Maintainability | High   | Global state, request mutation, SQL strings, and mixed controller/view concerns dominate.        |
@@ -31,7 +33,7 @@ For a small, trusted contributor group behind normal Piwigo authentication, depl
 | -------- | ---------- | --------------------------------------------------------------------------------------------- |
 | SEC-01   | Remediated | Upload webservices now use scoped authorization without administrator status elevation.       |
 | SEC-06   | Remediated | Legacy upload checksum and filename uniqueness paths are now guarded in Community wrappers.   |
-| SEC-02   | High       | Admin state changes lack consistent CSRF validation; deletion is performed by GET.            |
+| SEC-02   | Remediated | Admin mutations now require strict POST actions and canonical CSRF validation.                |
 | SEC-03   | High       | ZIP extraction has no canonical-path, expansion-size, entry-count, or depth limits.           |
 | SEC-04   | High       | Quotas are checked after persistence and can be exceeded concurrently.                        |
 | REL-01   | High       | Moderation and upload state span non-transactional MyISAM tables and filesystem changes.      |
@@ -51,10 +53,9 @@ For a small, trusted contributor group behind normal Piwigo authentication, depl
 
 ## Release gates
 
-1. Add POST-only CSRF checks to every administrator mutation and remove GET deletion.
-2. Add bounded archive inspection/extraction and server-side preflight quotas.
-3. Migrate plugin tables to InnoDB with keys and uniqueness constraints; introduce transaction-aware state transitions.
-4. Add integration tests for denied destinations, ownership, CSRF, quota races, archive abuse, moderation rollback, and user deletion.
-5. Establish structured logging and one application-to-Piwigo error translation boundary.
+1. Add bounded archive inspection/extraction and server-side preflight quotas.
+2. Migrate plugin tables to InnoDB with keys and uniqueness constraints; introduce transaction-aware state transitions.
+3. Add integration tests for denied destinations, ownership, quota races, archive abuse, moderation rollback, and user deletion.
+4. Establish structured logging and one application-to-Piwigo error translation boundary.
 
 See [06-remediation-roadmap.md](06-remediation-roadmap.md) for implementation order and acceptance criteria.

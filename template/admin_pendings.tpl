@@ -241,12 +241,16 @@ $(document).ready(function(){
     let $form = $("#formPhotos");
     const value = $(this)[0].value;
 
-    let serializedData = $form.serialize();
-    serializedData = serializedData.concat(`&photos%5B%5D=${value}&validate=true`);
+    let data = {
+      pwg_token: $form.find('[name="pwg_token"]').val(),
+      level: $form.find('[name="level"]').val(),
+      photos: [value]
+    };
+    data.action = 'pending_validate';
     $.ajax({
       type: "POST",
       url: "",
-      data: serializedData,
+      data: data,
       success: function (response) {
         // We need to force the reload to update the list, but we no longer get the success message displayed
         setTimeout(() => {
@@ -262,13 +266,17 @@ $(document).ready(function(){
     let $form = $("#formPhotos");
     const value = $(this)[0].value;
 
-    let serializedData = $form.serialize();
-    serializedData = serializedData.concat(`&photos%5B%5D=${value}&reject="Rejeter"`);
+    let data = {
+      pwg_token: $form.find('[name="pwg_token"]').val(),
+      level: $form.find('[name="level"]').val(),
+      photos: [value]
+    };
+    data.action = 'pending_reject';
 
     $.ajax({
       type: "POST",
       url: "",
-      data: serializedData,
+      data: data,
             success: function (response) {
         // We need to force the reload to update the list, but we no longer get the success message displayed
         setTimeout(() => {
@@ -284,6 +292,7 @@ $(document).ready(function(){
 {if !empty($photos) }
 
 <form id="formPhotos" method="post" action="">
+  <input type="hidden" name="pwg_token" value="{$PWG_TOKEN}">
   <div class="selection-mode-group-manager" style="width:14%;">
     <div style="display:flex;justify-content:right;align-items:center;">
       <label class="switch">
@@ -306,8 +315,8 @@ $(document).ready(function(){
       </select>
 
       <div style="display:flex;flex-direction:column;gap:0.5em;margin-top:1em;">
-        <input class="submit" type="submit" name="validate" value="{'Validate'|@translate}">
-        <input class="submit gray" type="submit" name="reject" value="{'Reject'|@translate}">
+        <button class="submit" type="submit" name="action" value="pending_validate">{'Validate'|@translate}</button>
+        <button class="submit gray" type="submit" name="action" value="pending_reject">{'Reject'|@translate}</button>
       </div>
     </div>
   </div>

@@ -38,12 +38,19 @@ $admin_base_url = get_root_url().'admin.php?page=plugin-community-config';
 
 check_status(ACCESS_ADMINISTRATOR);
 
+$action = null;
+if ('POST' === $_SERVER['REQUEST_METHOD'] and isset($_POST['action']) and is_string($_POST['action']))
+{
+  $action = $_POST['action'];
+}
+
 // +-----------------------------------------------------------------------+
 // |                                actions                                |
 // +-----------------------------------------------------------------------+
 
-if (!empty($_POST))
+if ('config_save' === $action)
 {
+  check_pwg_token();
   check_input_parameter('user_albums_parent', $_POST, false, PATTERN_ID);
 
   $conf['community'] = array(
@@ -67,6 +74,7 @@ $template->set_filename('plugin_admin_content', dirname(__FILE__).'/template/adm
 // +-----------------------------------------------------------------------+
 
 $template->assign('user_albums', $conf['community']['user_albums']);
+$template->assign('PWG_TOKEN', get_pwg_token());
 
 if (isset($conf['community']['user_albums_parent']))
 {

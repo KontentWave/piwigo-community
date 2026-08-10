@@ -30,14 +30,25 @@ include_once(PHPWG_ROOT_PATH.'admin/include/functions.php');
 include_once(PHPWG_ROOT_PATH.'admin/include/tabsheet.class.php');
 load_language('plugin.lang', COMMUNITY_PATH);
 
-check_input_parameter('cat_id', $_GET, false, PATTERN_ID);
-$cat_id = $_GET['cat_id'];
-
 // +-----------------------------------------------------------------------+
 // | Check Access and exit when user status is not ok                      |
 // +-----------------------------------------------------------------------+
 
 check_status(ACCESS_ADMINISTRATOR);
+
+$action = null;
+if ('POST' === $_SERVER['REQUEST_METHOD'] and isset($_POST['action']) and is_string($_POST['action']))
+{
+  $action = $_POST['action'];
+}
+
+if ('album_owner_save' === $action)
+{
+  check_pwg_token();
+}
+
+check_input_parameter('cat_id', $_GET, false, PATTERN_ID);
+$cat_id = $_GET['cat_id'];
 
 if (!isset($conf['community']['user_albums']) or !$conf['community']['user_albums'])
 {
@@ -48,7 +59,7 @@ if (!isset($conf['community']['user_albums']) or !$conf['community']['user_album
 // |                                actions                                |
 // +-----------------------------------------------------------------------+
 
-if (!empty($_POST))
+if ('album_owner_save' === $action)
 {
   check_input_parameter('community_user', $_POST, false, PATTERN_ID);
 
@@ -163,6 +174,7 @@ $template->assign(
     'ADMIN_PAGE_OBJECT_ID' => '#'.$category['id'],
     'community_user_options' => $users,
     'community_user_selected' => $category['community_user'],
+    'PWG_TOKEN' => get_pwg_token(),
     )
   );
 

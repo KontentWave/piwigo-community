@@ -7,6 +7,8 @@ form p {
 {/literal}
 
 <form method="post">
+  <input type="hidden" name="action" value="album_owner_save">
+  <input type="hidden" name="pwg_token" value="{$PWG_TOKEN}">
 
   <p>
     <strong>{'Album of user'|translate}</strong>

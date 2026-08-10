@@ -397,6 +397,8 @@
   <div class="permissionCase">
     <a class="icon-cancel CloseUserList CloseGuestUserList" href="{$F_ADD_ACTION}"></a>
     <form method="post" name="add_permission" action="{$F_ADD_ACTION}" class="properties" {if not isset($edit)}style="display:none"{/if}>
+      <input type="hidden" name="action" value="permission_save">
+      <input type="hidden" name="pwg_token" value="{$PWG_TOKEN}">
       <div class="icon">
         <span class="AddIcon icon icon-plus-circled"></span></div>
       <fieldset>
@@ -568,9 +570,12 @@
             <a href="{$permission.U_EDIT}">
               <span class="icon-pencil" style="font-size: 18px;"></span>
             </a>
-            <a href="{$permission.U_DELETE}" onclick="return confirm( document.getElementById('btn_delete').title + '\n\n' + '{'Are you sure?'|@translate|@escape:'javascript'}');">
-              <span class="icon-trash" style="font-size: 18px;"></span>
-            </a>
+            <form method="post" action="{$F_ADD_ACTION}" style="display:inline;" onsubmit="return confirm('{'Are you sure?'|@translate|@escape:'javascript'}');">
+              <input type="hidden" name="action" value="permission_delete">
+              <input type="hidden" name="permission_id" value="{$permission.ID}">
+              <input type="hidden" name="pwg_token" value="{$PWG_TOKEN}">
+              <button type="submit" class="icon-trash" style="font-size:18px;border:0;background:transparent;cursor:pointer;" aria-label="{'Delete'|@translate}"></button>
+            </form>
           </td>
 
         </tr>

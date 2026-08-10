@@ -44,12 +44,20 @@ $who_options = array(
 
 check_status(ACCESS_ADMINISTRATOR);
 
+$action = null;
+if ('POST' === $_SERVER['REQUEST_METHOD'] and isset($_POST['action']) and is_string($_POST['action']))
+{
+  $action = $_POST['action'];
+}
+
 // +-----------------------------------------------------------------------+
 // |                            add permissions                            |
 // +-----------------------------------------------------------------------+
 
-if (isset($_POST['submit_add']))
+if ('permission_save' === $action)
 {
+  check_pwg_token();
+
   // echo '<pre>'; print_r($_POST); echo '</pre>';
   if (!in_array($_POST['who'], array_keys($who_options)))
   {
@@ -190,14 +198,15 @@ DELETE
 // |                           remove permissions                          |
 // +-----------------------------------------------------------------------+
 
-if (isset($_GET['delete']))
+if ('permission_delete' === $action)
 {
-  check_input_parameter('delete', $_GET, false, PATTERN_ID);
+  check_pwg_token();
+  check_input_parameter('permission_id', $_POST, false, PATTERN_ID);
   
   $query = '
 DELETE
   FROM '.COMMUNITY_PERMISSIONS_TABLE.'
-  WHERE id = '.$_GET['delete'].'
+  WHERE id = '.$_POST['permission_id'].'
 ;';
   pwg_query($query);
 
@@ -331,6 +340,7 @@ $template->assign(
   array(
     'F_ADD_ACTION' => COMMUNITY_BASE_URL.'-'.$page['tab'],
     'community_conf' => $conf['community'],
+    'PWG_TOKEN' => get_pwg_token(),
     )
   );
 
@@ -526,7 +536,6 @@ foreach ($permissions as $permission)
       'STORAGE' => $storage,
       'STORAGE_TOOLTIP' => $storage_tooltip,
       'CREATE_SUBCATEGORIES' => get_boolean($permission['create_subcategories']),
-      'U_DELETE' => $admin_base_url.'&amp;delete='.$permission['id'],
       'U_EDIT' => $admin_base_url.'&amp;edit='.$permission['id'],
       'HIGHLIGHT' => $highlight,
       )

@@ -14,10 +14,10 @@ The audit includes direct Piwigo code needed to establish webservice authorizati
 | `add_photos.php`                            | Upload authorization, quotas, category selection, response composition.                                                     |
 | `edit_photos.php`                           | Ownership, CSRF, bulk mutation/deletion, pagination and memory behavior.                                                    |
 | `admin.php`                                 | Admin routing and tab integration.                                                                                          |
-| `admin_album.php`                           | Album ownership mutation and CSRF gap.                                                                                      |
-| `admin_config.php`                          | Configuration mutation and CSRF gap.                                                                                        |
-| `admin_pendings.php`                        | Moderation transitions, deletion, pagination, CSRF and atomicity.                                                           |
-| `admin_permissions.php`                     | Grant validation, CRUD, cache invalidation, GET deletion and CSRF.                                                          |
+| `admin_album.php`                           | Album ownership mutation and POST/token enforcement.                                                                        |
+| `admin_config.php`                          | Configuration mutation and POST/token enforcement.                                                                          |
+| `admin_pendings.php`                        | Moderation transitions, deletion, pagination, POST/token enforcement, and atomicity.                                        |
+| `admin_permissions.php`                     | Grant validation, CRUD, cache invalidation, and POST/token enforcement.                                                     |
 | `maintain.class.php`                        | Install/upgrade/activate/uninstall schema behavior and defaults.                                                            |
 | `include/functions_community.inc.php`       | Permission model, cache, user album creation, cleanup, quota aggregation, compatibility fallback.                           |
 | `include/photos_add_direct_process.inc.php` | Multipart handling, ZIP extraction, persistence, temporary files, error checks.                                             |
@@ -27,10 +27,10 @@ The audit includes direct Piwigo code needed to establish webservice authorizati
 | File                             | Reviewed concerns                                                                          |
 | -------------------------------- | ------------------------------------------------------------------------------------------ |
 | `template/add_photos.tpl`        | Webservice calls, CSRF token use, category creation, upload lifecycle, DOM/error handling. |
-| `template/admin_album.tpl`       | Ownership form and missing token.                                                          |
-| `template/admin_config.tpl`      | Configuration form and missing token.                                                      |
-| `template/admin_pendings.tpl`    | Moderation POST/AJAX behavior, missing token, unpaginated card rendering.                  |
-| `template/admin_permissions.tpl` | Permission form/delete links, missing token, large inline assets.                          |
+| `template/admin_album.tpl`       | Ownership form, canonical action, and token field.                                         |
+| `template/admin_config.tpl`      | Configuration form, canonical action, and token field.                                     |
+| `template/admin_pendings.tpl`    | Tokenized moderation POST/AJAX behavior and unpaginated card rendering.                    |
+| `template/admin_permissions.tpl` | Tokenized permission form/POST deletion control and large inline assets.                   |
 | `template/edit_photos.tpl`       | Bulk action form, token field, embedded set data, dependencies.                            |
 | `template/navigation_bar.tpl`    | Pagination rendering and compatibility role.                                               |
 | `edit_photos.js`                 | Webservice deletion, token use, batching, globals, copied legacy UI.                       |

@@ -38,12 +38,20 @@ $admin_base_url = get_root_url().'admin.php?page=plugin-community-pendings';
 
 check_status(ACCESS_ADMINISTRATOR);
 
+$action = null;
+if ('POST' === $_SERVER['REQUEST_METHOD'] and isset($_POST['action']) and is_string($_POST['action']))
+{
+  $action = $_POST['action'];
+}
+
 // +-----------------------------------------------------------------------+
 // |                                actions                                |
 // +-----------------------------------------------------------------------+
 
-if (!empty($_POST))
+if (in_array($action, array('pending_validate', 'pending_reject'), true))
 {
+  check_pwg_token();
+
   if (empty($_POST['photos']))
   {
     array_push(
@@ -56,7 +64,7 @@ if (!empty($_POST))
     check_input_parameter('photos', $_POST, true, PATTERN_ID);
     check_input_parameter('level', $_POST, false, PATTERN_ID);
     
-    if (isset($_POST['validate']))
+    if ('pending_validate' === $action)
     {
       $query = '
 UPDATE '.COMMUNITY_PENDINGS_TABLE.'
@@ -83,7 +91,7 @@ UPDATE '.IMAGES_TABLE.'
         );
     }
 
-    if (isset($_POST['reject']))
+    if ('pending_reject' === $action)
     {
       $query = '
 DELETE
@@ -269,7 +277,8 @@ $selected_level = isset($_POST['level']) ? $_POST['level'] : 0;
 $template->assign(
     array(
       'level_options'=> get_privacy_level_options(),
-      'level_options_selected' => array($selected_level)
+      'level_options_selected' => array($selected_level),
+      'PWG_TOKEN' => get_pwg_token(),
     )
   );
 

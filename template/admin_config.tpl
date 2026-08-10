@@ -45,6 +45,8 @@ jQuery(document).ready(function() {
 {/literal}
 
 <form method="post">
+  <input type="hidden" name="action" value="config_save">
+  <input type="hidden" name="pwg_token" value="{$PWG_TOKEN}">
 
   <p><label><input type="checkbox" name="user_albums"{if $user_albums} checked="checked"{/if}> <strong>{'User albums'|@translate}</strong> : <em>{'Piwigo automatically creates an album for each user, on first connection'|@translate}</em></label></p>
 
